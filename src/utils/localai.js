@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getSystemPrompt } = require('./prompts');
-const { sendToRenderer, initializeNewSession, saveConversationTurn } = require('./gemini');
+const { sendToRenderer, initializeNewSession, saveConversationTurn, sendToGroq, sendImageToGroq, hasGroqKey } = require('./gemini');
 const {
     ensureNativeBinary,
     ensureLlamaModel,
@@ -239,6 +239,11 @@ async function requestLlama(messages, onText) {
 }
 
 async function sendToLlama(transcription) {
+    if (hasGroqKey()) {
+        console.log('[LocalAI] Routing transcription to Groq (5ms):', transcription);
+        sendToRenderer('update-status', 'Generating response (Groq)...');
+        return await sendToGroq(transcription);
+    }
     localConversationHistory.push({
         role: 'user',
         content: transcription.trim(),
@@ -433,6 +438,41 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
         currentSystemPrompt = getSystemPrompt(profile, customPrompt, false);
         llamaModel = model;
 
+        const useGroq = hasGroqKey();
+        if (useGroq) {
+            sendToRenderer('update-status', 'Starting Whisper engine with Groq AI...');
+            sendDownloadProgress('Checking Whisper runner');
+            const whisperBinaryPath = await ensureNativeBinary('whisper', binaryProgress('Whisper runner'), initializationController.signal);
+
+            let whisperModelPath;
+            sendToRenderer('whisper-downloading', true);
+            try {
+                sendDownloadProgress('Checking Whisper model');
+                whisperModelPath = await ensureWhisperModel(whisperModel, binaryProgress('Whisper model'), initializationController.signal);
+            } finally {
+                sendToRenderer('whisper-downloading', false);
+            }
+
+            sendToRenderer('update-status', 'Starting Whisper server...');
+            await startWhisperServer(whisperBinaryPath, whisperModelPath);
+
+            isSpeaking = false;
+            speechBuffers = [];
+            silenceFrameCount = 0;
+            speechFrameCount = 0;
+            resampleRemainder = Buffer.alloc(0);
+            localConversationHistory = [];
+
+            initializeNewSession(profile, customPrompt);
+            isLocalActive = true;
+            initializationController = null;
+            sendToRenderer('local-ai-download-progress', { active: false });
+            sendToRenderer('session-initializing', false);
+            sendToRenderer('update-status', 'Listening (Whisper + Groq)...');
+            console.log('[LocalAI] Native Whisper + Groq session initialized successfully');
+            return true;
+        }
+
         const nativeFiles = await prepareNativeFiles(model, whisperModel, initializationController.signal);
         validatePreparedNativeFiles(nativeFiles);
 
@@ -526,7 +566,15 @@ function isLocalSessionActive() {
 }
 
 async function sendLocalText(text) {
-    if (!isLocalActive || !llamaProcess) {
+    if (!isLocalActive) {
+        return { success: false, error: 'No active local session' };
+    }
+    if (hasGroqKey()) {
+        console.log('[LocalAI] Routing text to Groq:', text);
+        await sendToGroq(text);
+        return { success: true };
+    }
+    if (!llamaProcess) {
         return { success: false, error: 'No active local session' };
     }
 
@@ -539,7 +587,14 @@ async function sendLocalText(text) {
 }
 
 async function sendLocalImage(base64Data, prompt) {
-    if (!isLocalActive || !llamaProcess) {
+    if (!isLocalActive) {
+        return { success: false, error: 'No active local session' };
+    }
+    if (hasGroqKey()) {
+        console.log('[LocalAI] Routing image to Groq vision');
+        return await sendImageToGroq(base64Data, prompt);
+    }
+    if (!llamaProcess) {
         return { success: false, error: 'No active local session' };
     }
 

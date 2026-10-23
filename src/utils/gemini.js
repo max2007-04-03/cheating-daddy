@@ -89,6 +89,10 @@ function initializeNewSession(profile = null, customPrompt = null) {
     groqConversationHistory = [];
     currentProfile = profile;
     currentCustomPrompt = customPrompt;
+    try {
+        const { getSystemPrompt } = require('./prompts');
+        currentSystemPrompt = getSystemPrompt(profile || 'interview', customPrompt || '', false);
+    } catch (e) {}
     console.log('New conversation session started:', currentSessionId, 'profile:', profile);
 
     // Save initial session with profile context
@@ -1362,4 +1366,7 @@ module.exports = {
     sendImageToGeminiHttp,
     setupGeminiIpcHandlers,
     formatSpeakerResults,
+    sendToGroq,
+    sendImageToGroq,
+    hasGroqKey,
 };

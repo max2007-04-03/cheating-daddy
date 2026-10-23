@@ -148,6 +148,12 @@ async function initializeGemini(profile = 'interview', language = 'en-US') {
         if (success) {
             cheatingDaddy.setStatus('Live');
         } else {
+            const creds = await storage.getCredentials();
+            if (creds.groqApiKey && creds.groqApiKey.trim() !== '') {
+                console.log('Gemini Live unavailable, auto-falling back to Whisper + Groq...');
+                cheatingDaddy.setStatus('Whisper + Groq Live');
+                return await initializeLocal(profile);
+            }
             cheatingDaddy.setStatus('error');
         }
     }
