@@ -302,8 +302,8 @@ async function sendToGroq(transcription) {
         content: transcription.trim(),
     });
 
-    if (groqConversationHistory.length > 20) {
-        groqConversationHistory = groqConversationHistory.slice(-20);
+    if (groqConversationHistory.length > 6) {
+        groqConversationHistory = groqConversationHistory.slice(-6);
     }
 
     try {
