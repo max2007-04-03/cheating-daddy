@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getSystemPrompt } = require('./prompts');
 const { sendToRenderer, initializeNewSession, saveConversationTurn, sendToGroq, sendImageToGroq, hasGroqKey } = require('./gemini');
+const { getGroqApiKey } = require('../storage');
 const {
     ensureNativeBinary,
     ensureLlamaModel,
@@ -30,13 +31,13 @@ let silenceFrameCount = 0;
 let speechFrameCount = 0;
 
 const VAD_MODES = {
-    NORMAL: { energyThreshold: 0.01, speechFramesRequired: 3, silenceFramesRequired: 30 },
-    LOW_BITRATE: { energyThreshold: 0.008, speechFramesRequired: 4, silenceFramesRequired: 35 },
-    AGGRESSIVE: { energyThreshold: 0.015, speechFramesRequired: 2, silenceFramesRequired: 20 },
-    VERY_AGGRESSIVE: { energyThreshold: 0.02, speechFramesRequired: 2, silenceFramesRequired: 15 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 10 },
+    NORMAL: { energyThreshold: 0.007, speechFramesRequired: 2, silenceFramesRequired: 10 },
+    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 8 },
+    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 8 },
 };
 
-let vadConfig = VAD_MODES.VERY_AGGRESSIVE;
+let vadConfig = VAD_MODES.NORMAL;
 let resampleRemainder = Buffer.alloc(0);
 
 function resample24kTo16k(inputBuffer) {
@@ -130,9 +131,64 @@ function createWavBuffer(pcm16Buffer) {
     return Buffer.concat([header, pcm16Buffer]);
 }
 
+function isWhisperHallucination(text) {
+    if (!text) return true;
+    const cleaned = text.trim().toLowerCase().replace(/[.,!?;:()]/g, '');
+    const hallucinations = ['thank you', 'thanks for watching', 'you', 'subtitles by', 'bye', 'thank you for watching', 'mbc', 'subscribe', 'silence', 'so'];
+    return hallucinations.includes(cleaned) || cleaned.length < 2;
+}
+
+async function transcribeWithGroq(pcm16kBuffer) {
+    const groqApiKey = getGroqApiKey();
+    if (!groqApiKey) {
+        throw new Error('No Groq API key configured');
+    }
+
+    const wavBuffer = createWavBuffer(pcm16kBuffer);
+    const formData = new FormData();
+    formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'speech.wav');
+    formData.append('model', 'whisper-large-v3-turbo');
+    formData.append('response_format', 'json');
+    formData.append('temperature', '0.0');
+
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${groqApiKey}`,
+        },
+        body: formData,
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Groq Whisper returned HTTP ${response.status}: ${errorText}`);
+    }
+
+    const result = await response.json();
+    return result.text?.trim() || '';
+}
+
 async function transcribeAudio(pcm16kBuffer) {
+    if (hasGroqKey()) {
+        try {
+            console.log('[LocalAI] Transcribing with Groq whisper-large-v3-turbo...');
+            const t0 = Date.now();
+            const text = await transcribeWithGroq(pcm16kBuffer);
+            console.log(`[LocalAI] Groq Whisper transcribed in ${Date.now() - t0}ms:`, text);
+            if (isWhisperHallucination(text)) {
+                console.log('[LocalAI] Ignored Whisper silence/hallucination:', text);
+                return '';
+            }
+            return text;
+        } catch (error) {
+            console.error('[LocalAI] Groq Whisper error:', error.message);
+            if (!whisperBaseUrl) throw error;
+            console.log('[LocalAI] Falling back to local whisper...');
+        }
+    }
+
     if (!whisperBaseUrl) {
-        throw new Error('Whisper server is not running');
+        throw new Error('Whisper server is not running and Groq key is unavailable');
     }
 
     const wavBuffer = createWavBuffer(pcm16kBuffer);
@@ -140,7 +196,6 @@ async function transcribeAudio(pcm16kBuffer) {
     formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'speech.wav');
     formData.append('response_format', 'json');
     formData.append('temperature', '0.0');
-    formData.append('language', 'en');
 
     const response = await fetch(`${whisperBaseUrl}/inference`, {
         method: 'POST',
@@ -153,7 +208,7 @@ async function transcribeAudio(pcm16kBuffer) {
 
     const result = await response.json();
     const text = result.text?.trim() || '';
-    console.log('[LocalAI] Transcription:', text);
+    console.log('[LocalAI] Local Whisper Transcription:', text);
     return text;
 }
 
@@ -444,22 +499,6 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
         };
         const useGroq = hasGroqKey();
         if (useGroq) {
-            sendToRenderer('update-status', 'Starting Whisper engine with Groq AI...');
-            sendDownloadProgress('Checking Whisper runner');
-            const whisperBinaryPath = await ensureNativeBinary('whisper', binaryProgress('Whisper runner'), initializationController.signal);
-
-            let whisperModelPath;
-            sendToRenderer('whisper-downloading', true);
-            try {
-                sendDownloadProgress('Checking Whisper model');
-                whisperModelPath = await ensureWhisperModel(whisperModel, binaryProgress('Whisper model'), initializationController.signal);
-            } finally {
-                sendToRenderer('whisper-downloading', false);
-            }
-
-            sendToRenderer('update-status', 'Starting Whisper server...');
-            await startWhisperServer(whisperBinaryPath, whisperModelPath);
-
             isSpeaking = false;
             speechBuffers = [];
             silenceFrameCount = 0;
@@ -472,8 +511,8 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
             initializationController = null;
             sendToRenderer('local-ai-download-progress', { active: false });
             sendToRenderer('session-initializing', false);
-            sendToRenderer('update-status', 'Listening (Whisper + Groq)...');
-            console.log('[LocalAI] Native Whisper + Groq session initialized successfully');
+            sendToRenderer('update-status', 'Listening (Groq Turbo: Whisper + LLM)...');
+            console.log('[LocalAI] Groq Turbo (Cloud Whisper + Groq LLM) session initialized instantly');
             return true;
         }
 
