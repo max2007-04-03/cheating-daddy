@@ -438,6 +438,10 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
         currentSystemPrompt = getSystemPrompt(profile, customPrompt, false);
         llamaModel = model;
 
+        const binaryProgress = label => progress => {
+            sendToRenderer('update-status', formatDownloadStatus(label, progress));
+            sendDownloadProgress(label, progress);
+        };
         const useGroq = hasGroqKey();
         if (useGroq) {
             sendToRenderer('update-status', 'Starting Whisper engine with Groq AI...');
