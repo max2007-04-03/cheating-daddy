@@ -294,14 +294,7 @@ async function sendToGroq(transcription) {
         (m, idx, arr) => m && arr.indexOf(m) === idx
     );
 
-    groqConversationHistory.push({
-        role: 'user',
-        content: transcription.trim(),
-    });
-
-    if (groqConversationHistory.length > 4) {
-        groqConversationHistory = groqConversationHistory.slice(-4);
-    }
+    const userPromptContent = `Java interview question or topic to explain: "${transcription.trim()}"`;
 
     let response = null;
     let activeModel = primaryModel;
@@ -328,7 +321,10 @@ async function sendToGroq(transcription) {
                 },
                 body: JSON.stringify({
                     model: activeModel,
-                    messages: [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...groqConversationHistory],
+                    messages: [
+                        { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
+                        { role: 'user', content: userPromptContent },
+                    ],
                     stream: true,
                     temperature: 0.5,
                     max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
@@ -392,7 +388,7 @@ async function sendToGroq(transcription) {
                         if (token) {
                             fullText += token;
                             const displayText = stripThinkingTags(fullText);
-                            if (displayText) {
+                            if (displayText && !displayText.trim().startsWith('[SKIP]') && !'[SKIP]'.startsWith(displayText.trim())) {
                                 sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
                                 isFirst = false;
                             }
@@ -417,15 +413,12 @@ async function sendToGroq(transcription) {
 
         incrementCharUsage('groq', modelKey, inputChars + outputChars);
 
-        if (cleanedResponse) {
-            groqConversationHistory.push({
-                role: 'assistant',
-                content: cleanedResponse,
-            });
-            if (groqConversationHistory.length > 4) {
-                groqConversationHistory = groqConversationHistory.slice(-4);
-            }
+        if (cleanedResponse && !cleanedResponse.includes('[SKIP]')) {
             saveConversationTurn(transcription, cleanedResponse);
+        } else if (cleanedResponse.includes('[SKIP]')) {
+            console.log('Groq skipped non-interview chatter:', transcription);
+            sendToRenderer('update-status', 'Listening...');
+            return;
         } else {
             console.warn(`Groq returned empty answer (${activeModel}), ignoring`);
             groqConversationHistory.pop();
