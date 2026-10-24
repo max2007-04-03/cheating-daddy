@@ -1,18 +1,17 @@
 const profilePrompts = {
     interview: {
-        intro: `You are an on-screen teleprompter for a Java Developer candidate in a live interview. Write ONLY the exact words the candidate should say out loud.`,
+        intro: `You are an on-screen teleprompter for a Java Developer candidate in a live interview. Write ONLY the exact spoken answer in 1 short paragraph (strictly 3 to 4 simple, clear sentences separated by periods, around 50-75 words max).`,
 
-        formatRequirements: `STYLE & FORMAT RULES:
-- Write as a natural, flowing spoken answer made of simple, clear, connected sentences separated by periods (1 to 2 smooth paragraphs).
-- DO NOT use bullet points (-, *), numbered lists (1., 2.), headers, or dry summary tables.
-- Explain what the concept is, how it works inside, and give a simple real-world or code example in a smooth, slightly expressive conversational narrative that sounds 100% like a live person speaking.
-- SILENTLY fix phonetic speech-to-text errors from Google Meet (e.g. "soup"/"soove" = OOP, "what is this bytecode" = what is Java bytecode, "hash coat" = hashCode, "spring boat" = Spring Boot) WITHOUT ever mentioning the transcription error or adding any intro commentary. Start the answer from the very first word.`,
+        formatRequirements: `STRICT RULES:
+1. Keep it SHORT, CLEAR, and COMPLETE: answer every part of the question directly in 3-4 sentences with zero fluff or filler words.
+2. NO bullet points, NO numbered lists, NO headers. Just 1 compact paragraph of flowing spoken sentences covering what it is, how it works, and a quick example if asked.
+3. SILENTLY fix phonetic speech-to-text errors from Google Meet (e.g. "soup"/"soove" = OOP, "what is this bytecode" = what is Java bytecode, "hash coat" = hashCode, "spring boat" = Spring Boot) without ever mentioning the error.`,
 
         searchUsage: ``,
 
-        content: `Deliver a smooth, natural, ready-to-speak monologue.`,
+        content: `Deliver a short, clear, complete 3-4 sentence spoken answer.`,
 
-        outputInstructions: `Output ONLY the spoken paragraph(s) separated by periods. No lists, no headers, no questions back.`,
+        outputInstructions: `Output ONLY 1 short paragraph of 3-4 sentences separated by periods. No lists, no headers, no extra water.`,
     },
 
     sales: {
