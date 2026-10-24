@@ -25,23 +25,40 @@ let isLocalActive = false;
 let initializationController = null;
 let llamaCacheSnapshot = new Set();
 
-let isSpeaking = false;
-let speechBuffers = [];
-let silenceFrameCount = 0;
-let speechFrameCount = 0;
+function createChannelState() {
+    return {
+        isSpeaking: false,
+        speechBuffers: [],
+        preRollBuffers: [],
+        silenceFrameCount: 0,
+        speechFrameCount: 0,
+        resampleRemainder: Buffer.alloc(0),
+    };
+}
+
+let channelStates = {
+    speaker: createChannelState(),
+    mic: createChannelState(),
+};
+
+function resetAllChannelStates() {
+    channelStates = {
+        speaker: createChannelState(),
+        mic: createChannelState(),
+    };
+}
 
 const VAD_MODES = {
-    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 14 },
-    NORMAL: { energyThreshold: 0.007, speechFramesRequired: 2, silenceFramesRequired: 14 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 12 },
+    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 12 },
     AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 10 },
     VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 10 },
 };
 
 let vadConfig = VAD_MODES.NORMAL;
-let resampleRemainder = Buffer.alloc(0);
 
-function resample24kTo16k(inputBuffer) {
-    const combined = Buffer.concat([resampleRemainder, inputBuffer]);
+function resample24kTo16k(inputBuffer, state) {
+    const combined = Buffer.concat([state.resampleRemainder, inputBuffer]);
     const inputSamples = Math.floor(combined.length / 2);
     const outputSamples = Math.floor((inputSamples * 2) / 3);
     const outputBuffer = Buffer.alloc(outputSamples * 2);
@@ -58,7 +75,7 @@ function resample24kTo16k(inputBuffer) {
 
     const consumedInputSamples = Math.ceil((outputSamples * 3) / 2);
     const remainderStart = consumedInputSamples * 2;
-    resampleRemainder = remainderStart < combined.length ? combined.slice(remainderStart) : Buffer.alloc(0);
+    state.resampleRemainder = remainderStart < combined.length ? combined.slice(remainderStart) : Buffer.alloc(0);
 
     return outputBuffer;
 }
@@ -76,37 +93,47 @@ function calculateRms(pcm16Buffer) {
     return Math.sqrt(sumSquares / samples);
 }
 
-function processVad(pcm16kBuffer) {
+function processVad(pcm16kBuffer, channelName) {
+    const state = channelStates[channelName] || channelStates.speaker;
     const rms = calculateRms(pcm16kBuffer);
     const isVoice = rms > vadConfig.energyThreshold;
+    const frameCopy = Buffer.from(pcm16kBuffer);
+
+    if (!state.isSpeaking) {
+        state.preRollBuffers.push(frameCopy);
+        if (state.preRollBuffers.length > 5) {
+            state.preRollBuffers.shift();
+        }
+    }
 
     if (isVoice) {
-        speechFrameCount += 1;
-        silenceFrameCount = 0;
+        state.speechFrameCount += 1;
+        state.silenceFrameCount = 0;
 
-        if (!isSpeaking && speechFrameCount >= vadConfig.speechFramesRequired) {
-            isSpeaking = true;
-            speechBuffers = [];
-            console.log('[LocalAI] Speech started (RMS:', rms.toFixed(4), ')');
+        if (!state.isSpeaking && state.speechFrameCount >= vadConfig.speechFramesRequired) {
+            state.isSpeaking = true;
+            state.speechBuffers = [...state.preRollBuffers];
+            state.preRollBuffers = [];
+            console.log(`[LocalAI] Speech started on ${channelName} (RMS:`, rms.toFixed(4), ')');
             sendToRenderer('update-status', 'Listening... (speech detected)');
         }
     } else {
-        silenceFrameCount += 1;
-        speechFrameCount = 0;
+        state.silenceFrameCount += 1;
+        state.speechFrameCount = 0;
 
-        if (isSpeaking && silenceFrameCount >= vadConfig.silenceFramesRequired) {
-            isSpeaking = false;
-            const audioData = Buffer.concat(speechBuffers);
-            speechBuffers = [];
-            console.log('[LocalAI] Speech ended, accumulated', audioData.length, 'bytes');
+        if (state.isSpeaking && state.silenceFrameCount >= vadConfig.silenceFramesRequired) {
+            state.isSpeaking = false;
+            const audioData = Buffer.concat(state.speechBuffers);
+            state.speechBuffers = [];
+            console.log(`[LocalAI] Speech ended on ${channelName}, accumulated`, audioData.length, 'bytes');
             sendToRenderer('update-status', 'Transcribing...');
             handleSpeechEnd(audioData);
             return;
         }
     }
 
-    if (isSpeaking) {
-        speechBuffers.push(Buffer.from(pcm16kBuffer));
+    if (state.isSpeaking) {
+        state.speechBuffers.push(frameCopy);
     }
 }
 
@@ -537,11 +564,7 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
         };
         const useGroq = hasGroqKey();
         if (useGroq) {
-            isSpeaking = false;
-            speechBuffers = [];
-            silenceFrameCount = 0;
-            speechFrameCount = 0;
-            resampleRemainder = Buffer.alloc(0);
+            resetAllChannelStates();
             localConversationHistory = [];
 
             initializeNewSession(profile, customPrompt);
@@ -565,11 +588,7 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
         sendDownloadProgress('Loading language model');
         await startLlamaServer(nativeFiles.llamaBinaryPath, nativeFiles.llamaModelPath, nativeFiles.projectorPath);
 
-        isSpeaking = false;
-        speechBuffers = [];
-        silenceFrameCount = 0;
-        speechFrameCount = 0;
-        resampleRemainder = Buffer.alloc(0);
+        resetAllChannelStates();
         localConversationHistory = [];
 
         initializeNewSession(profile, customPrompt);
@@ -598,12 +617,13 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
     }
 }
 
-function processLocalAudio(monoChunk24k) {
+function processLocalAudio(monoChunk24k, channel = 'speaker') {
     if (!isLocalActive) return;
+    const state = channelStates[channel] || channelStates.speaker;
 
-    const pcm16k = resample24kTo16k(monoChunk24k);
+    const pcm16k = resample24kTo16k(monoChunk24k, state);
     if (pcm16k.length > 0) {
-        processVad(pcm16k);
+        processVad(pcm16k, channel);
     }
 }
 
@@ -618,11 +638,7 @@ function closeLocalSession() {
     llamaBaseUrl = null;
     whisperBaseUrl = null;
     llamaModel = null;
-    isSpeaking = false;
-    speechBuffers = [];
-    silenceFrameCount = 0;
-    speechFrameCount = 0;
-    resampleRemainder = Buffer.alloc(0);
+    resetAllChannelStates();
     localConversationHistory = [];
     currentSystemPrompt = null;
 }

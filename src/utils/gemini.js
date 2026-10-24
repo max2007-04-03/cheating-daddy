@@ -294,7 +294,7 @@ async function sendToGroq(transcription) {
         (m, idx, arr) => m && arr.indexOf(m) === idx
     );
 
-    const userPromptContent = `Java interview question or topic to explain: "${transcription.trim()}"`;
+    const userPromptContent = `Decode any phonetic speech-to-text errors in this transcription and answer the intended Java / Backend interview question completely: "${transcription.trim()}"`;
 
     let response = null;
     let activeModel = primaryModel;
@@ -388,7 +388,7 @@ async function sendToGroq(transcription) {
                         if (token) {
                             fullText += token;
                             const displayText = stripThinkingTags(fullText);
-                            if (displayText && !displayText.trim().startsWith('[SKIP]') && !'[SKIP]'.startsWith(displayText.trim())) {
+                            if (displayText) {
                                 sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
                                 isFirst = false;
                             }
@@ -413,12 +413,8 @@ async function sendToGroq(transcription) {
 
         incrementCharUsage('groq', modelKey, inputChars + outputChars);
 
-        if (cleanedResponse && !cleanedResponse.includes('[SKIP]')) {
+        if (cleanedResponse) {
             saveConversationTurn(transcription, cleanedResponse);
-        } else if (cleanedResponse.includes('[SKIP]')) {
-            console.log('Groq skipped non-interview chatter:', transcription);
-            sendToRenderer('update-status', 'Listening...');
-            return;
         } else {
             console.warn(`Groq returned empty answer (${activeModel}), ignoring`);
             groqConversationHistory.pop();
@@ -1135,7 +1131,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         if (currentProviderMode === 'local') {
             try {
                 const pcmBuffer = Buffer.from(data, 'base64');
-                getLocalAi().processLocalAudio(pcmBuffer);
+                getLocalAi().processLocalAudio(pcmBuffer, 'speaker');
                 return { success: true };
             } catch (error) {
                 console.error('Error sending local audio:', error);
@@ -1170,7 +1166,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         if (currentProviderMode === 'local') {
             try {
                 const pcmBuffer = Buffer.from(data, 'base64');
-                getLocalAi().processLocalAudio(pcmBuffer);
+                getLocalAi().processLocalAudio(pcmBuffer, 'mic');
                 return { success: true };
             } catch (error) {
                 console.error('Error sending local mic audio:', error);
