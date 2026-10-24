@@ -9,7 +9,7 @@ let micAudioProcessor = null;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
 const AUDIO_CHUNK_DURATION = 0.1; // seconds
-const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
+const BUFFER_SIZE = 2048; // Low-latency buffer size (~85ms) for faster speech detection
 
 let hiddenVideo = null;
 let offscreenCanvas = null;

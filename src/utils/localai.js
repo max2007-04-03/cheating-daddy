@@ -49,13 +49,28 @@ function resetAllChannelStates() {
 }
 
 const VAD_MODES = {
-    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 12 },
-    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 12 },
-    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 10 },
-    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 10 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 7 },
+    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 7 },
+    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 6 },
+    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 6 },
 };
 
 let vadConfig = VAD_MODES.NORMAL;
+let lastGroqPrewarmTime = 0;
+
+function prewarmGroqConnection() {
+    const now = Date.now();
+    if (now - lastGroqPrewarmTime < 20000) return;
+    const groqApiKey = getGroqApiKey();
+    if (!groqApiKey) return;
+    lastGroqPrewarmTime = now;
+    fetch('https://api.groq.com/openai/v1/models', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${groqApiKey}` },
+    })
+        .then(res => res.arrayBuffer())
+        .catch(() => {});
+}
 
 function resample24kTo16k(inputBuffer, state) {
     const combined = Buffer.concat([state.resampleRemainder, inputBuffer]);
@@ -114,6 +129,7 @@ function processVad(pcm16kBuffer, channelName) {
             state.isSpeaking = true;
             state.speechBuffers = [...state.preRollBuffers];
             state.preRollBuffers = [];
+            prewarmGroqConnection();
             console.log(`[LocalAI] Speech started on ${channelName} (RMS:`, rms.toFixed(4), ')');
             sendToRenderer('update-status', 'Listening... (speech detected)');
         }

@@ -270,6 +270,7 @@ function getGroqReasoningOptions(model, disableThinking) {
     if (model.startsWith('openai/gpt-oss-')) {
         return {
             include_reasoning: false,
+            ...(disableThinking ? { reasoning_effort: 'low' } : {}),
         };
     }
 
