@@ -277,6 +277,10 @@ function getGroqReasoningOptions(model, disableThinking) {
     return {};
 }
 
+let lastGroqTranscriptionText = '';
+let lastGroqTranscriptionTime = 0;
+let activeGroqAbortController = null;
+
 async function sendToGroq(transcription) {
     const groqApiKey = getGroqApiKey();
     if (!groqApiKey) {
@@ -295,7 +299,25 @@ async function sendToGroq(transcription) {
         (m, idx, arr) => m && arr.indexOf(m) === idx
     );
 
-    const userPromptContent = `Decode any phonetic speech-to-text errors in this transcription and answer the intended Java / Backend interview question completely: "${transcription.trim()}"`;
+    if (activeGroqAbortController) {
+        try {
+            activeGroqAbortController.abort();
+        } catch (_) {}
+        activeGroqAbortController = null;
+    }
+    const abortController = new AbortController();
+    activeGroqAbortController = abortController;
+
+    const now = Date.now();
+    const cleanTranscript = transcription.trim();
+    const isRecentFollowUp = lastGroqTranscriptionText && (now - lastGroqTranscriptionTime < 15000);
+
+    const userPromptContent = isRecentFollowUp
+        ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Decode any phonetic speech-to-text errors. Check how the Latest segment relates to the Previous segment:\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
+        : `Decode any phonetic speech-to-text errors in this transcription and answer the intended Java / Backend interview question completely: "${cleanTranscript}"`;
+
+    lastGroqTranscriptionText = cleanTranscript;
+    lastGroqTranscriptionTime = now;
 
     let response = null;
     let activeModel = primaryModel;
@@ -316,6 +338,7 @@ async function sendToGroq(transcription) {
 
             const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                 method: 'POST',
+                signal: abortController.signal,
                 headers: {
                     Authorization: `Bearer ${groqApiKey}`,
                     'Content-Type': 'application/json',
@@ -430,6 +453,10 @@ async function sendToGroq(transcription) {
         console.log(`Groq response completed (${activeModel})`);
         sendToRenderer('update-status', 'Listening...');
     } catch (error) {
+        if (error && error.name === 'AbortError') {
+            console.log('Previous Groq stream aborted because speaker continued talking');
+            return;
+        }
         console.error('Error calling Groq API:', error);
         groqConversationHistory.pop();
         logTransportEvent('groq.text.error', {

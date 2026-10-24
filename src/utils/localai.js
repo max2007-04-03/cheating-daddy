@@ -41,7 +41,95 @@ let channelStates = {
     mic: createChannelState(),
 };
 
+let pendingTranscriptParts = [];
+let pendingDispatchTimer = null;
+
+function clearPendingDispatchTimer() {
+    if (pendingDispatchTimer) {
+        clearTimeout(pendingDispatchTimer);
+        pendingDispatchTimer = null;
+    }
+}
+
+function isAnyChannelSpeaking() {
+    return Boolean(channelStates.speaker?.isSpeaking || channelStates.mic?.isSpeaking);
+}
+
+const TRAILING_INCOMPLETE_WORDS = new Set([
+    // English connectors, prepositions, articles, pronouns, auxiliaries, setup verbs
+    'and', 'or', 'but', 'so', 'because', 'since', 'if', 'when', 'while', 'where',
+    'which', 'that', 'who', 'whom', 'whose', 'whether', 'although', 'though', 'unless',
+    'until', 'before', 'after', 'to', 'for', 'in', 'on', 'at', 'with', 'by', 'from',
+    'about', 'into', 'onto', 'between', 'among', 'through', 'during', 'without', 'within',
+    'like', 'as', 'than', 'a', 'an', 'the', 'this', 'these', 'those', 'my', 'your',
+    'his', 'her', 'its', 'our', 'their', 'some', 'any', 'every', 'each', 'no', 'not',
+    'is', 'are', 'am', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+    'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'can', 'could', 'may',
+    'might', 'must', 'what', 'how', 'why', 'say', 'suppose', 'imagine', 'assume',
+    'consider', 'specifically', 'particularly', 'especially', 'called', 'named', 'using',
+    // Ukrainian & Russian connectors, prepositions, pronouns, setup words
+    'і', 'й', 'та', 'а', 'але', 'або', 'чи', 'якщо', 'коли', 'поки', 'тому', 'бо',
+    'щоб', 'що', 'який', 'яка', 'яке', 'які', 'якого', 'яких', 'у', 'в', 'на', 'з',
+    'із', 'зі', 'до', 'від', 'про', 'для', 'при', 'між', 'без', 'через', 'після',
+    'перед', 'як', 'ніж', 'це', 'цей', 'ця', 'ці', 'той', 'ті', 'мій', 'твій', 'наш',
+    'ваш', 'їх', 'є', 'був', 'була', 'були', 'буде', 'не', 'ні', 'но', 'или', 'если',
+    'когда', 'пока', 'потому', 'так', 'чтобы', 'что', 'который', 'которая', 'которое',
+    'которые', 'которого', 'которых', 'из', 'от', 'о', 'об', 'между', 'после', 'как',
+    'чем', 'это', 'этот', 'эта', 'эти', 'тот', 'те', 'был', 'была', 'были', 'будет',
+    'допустим', 'предположим', 'например', 'скажем', 'нехай', 'наприклад', 'скажімо', 'уявимо'
+]);
+
+const QUESTION_INDICATORS = /\b(what|how|why|when|where|which|who|whom|whose|explain|describe|tell|compare|difference|define|name|list|can you|could you|do you|does|is there|are there|will it|would it|що|як|чому|коли|де|який|яка|яке|які|розкажи|розкажіть|поясни|поясніть|назви|назвіть|різниця|чи можна|что|как|почему|когда|где|какой|какая|какие|расскажи|расскажите|объясни|объясните|назови|разница)\b/i;
+
+const SETUP_PREFIXES = /^(okay|ok|alright|all right|well|so|now|next|first|second|let's|lets|suppose|imagine|assume|consider|say|i want|i would like|we have|there is|there are|давай|давайте|допустим|предположим|уявимо|уяви|нехай|тепер|наступне|дивіться|смотри|смотрите)\b/i;
+
+function isIncompleteUtterance(text) {
+    if (!text) return true;
+    const trimmed = text.trim();
+    if (!trimmed) return true;
+
+    // 1. Explicit trailing continuation punctuation
+    if (/[,;:\-—]$|\.\.\.$/.test(trimmed)) {
+        return true;
+    }
+
+    const words = trimmed
+        .toLowerCase()
+        .replace(/[.,!?;:()'"\-—]/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+
+    if (words.length === 0) return true;
+
+    const lastWord = words[words.length - 1];
+
+    // 2. Ends with a dangling conjunction, preposition, article, or auxiliary verb
+    if (TRAILING_INCOMPLETE_WORDS.has(lastWord)) {
+        return true;
+    }
+
+    // 3. Ends with a question mark and has at least 3 words (and didn't end on a dangling word) -> Complete!
+    if (trimmed.endsWith('?') && words.length >= 3) {
+        return false;
+    }
+
+    // 4. Very short fragment (< 5 words) without a question mark and without a clear question/imperative word
+    if (words.length < 5 && !QUESTION_INDICATORS.test(trimmed)) {
+        return true;
+    }
+
+    // 5. Conversational setup clause ("Let's talk about Spring.", "Suppose we have a class.") without an actual question yet
+    if (!trimmed.endsWith('?') && SETUP_PREFIXES.test(trimmed) && !QUESTION_INDICATORS.test(trimmed)) {
+        return true;
+    }
+
+    return false;
+}
+
 function resetAllChannelStates() {
+    clearPendingDispatchTimer();
+    pendingTranscriptParts = [];
     channelStates = {
         speaker: createChannelState(),
         mic: createChannelState(),
@@ -49,10 +137,10 @@ function resetAllChannelStates() {
 }
 
 const VAD_MODES = {
-    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 7 },
-    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 7 },
-    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 6 },
-    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 6 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 10 },
+    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 10 },
+    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 8 },
+    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 8 },
 };
 
 let vadConfig = VAD_MODES.NORMAL;
@@ -129,9 +217,13 @@ function processVad(pcm16kBuffer, channelName) {
             state.isSpeaking = true;
             state.speechBuffers = [...state.preRollBuffers];
             state.preRollBuffers = [];
+            clearPendingDispatchTimer();
             prewarmGroqConnection();
             console.log(`[LocalAI] Speech started on ${channelName} (RMS:`, rms.toFixed(4), ')');
-            sendToRenderer('update-status', 'Listening... (speech detected)');
+            const statusMsg = pendingTranscriptParts.length > 0
+                ? 'Listening... (continuing question)'
+                : 'Listening... (speech detected)';
+            sendToRenderer('update-status', statusMsg);
         }
     } else {
         state.silenceFrameCount += 1;
@@ -293,12 +385,60 @@ async function transcribeAudio(pcm16kBuffer) {
     return text;
 }
 
+function schedulePendingDispatch() {
+    clearPendingDispatchTimer();
+    if (!isLocalActive || pendingTranscriptParts.length === 0) return;
+
+    if (isAnyChannelSpeaking()) {
+        sendToRenderer('update-status', 'Listening... (continuing question)');
+        return;
+    }
+
+    const combined = pendingTranscriptParts.join(' ').replace(/\s+/g, ' ').trim();
+    const incomplete = isIncompleteUtterance(combined);
+    const holdMs = incomplete ? 1700 : 300;
+
+    if (incomplete) {
+        console.log(`[LocalAI] Utterance looks incomplete ("${combined}"), holding ${holdMs}ms for continuation...`);
+        sendToRenderer('update-status', 'Waiting for full question...');
+    }
+
+    pendingDispatchTimer = setTimeout(async () => {
+        pendingDispatchTimer = null;
+        if (!isLocalActive || pendingTranscriptParts.length === 0) return;
+        if (isAnyChannelSpeaking()) {
+            sendToRenderer('update-status', 'Listening... (continuing question)');
+            return;
+        }
+
+        const finalQuestion = pendingTranscriptParts.join(' ').replace(/\s+/g, ' ').trim();
+        pendingTranscriptParts = [];
+
+        if (!finalQuestion || finalQuestion.length < 3) {
+            sendToRenderer('update-status', 'Listening...');
+            return;
+        }
+
+        try {
+            sendToRenderer('update-status', 'Generating response...');
+            await sendToLlama(finalQuestion);
+        } catch (err) {
+            console.error('[LocalAI] Dispatch error:', err);
+            sendToRenderer('update-status', 'Listening...');
+        }
+    }, holdMs);
+}
+
 async function handleSpeechEnd(audioData) {
     if (!isLocalActive) return;
 
     if (audioData.length < 16000) {
         console.log('[LocalAI] Audio too short, skipping');
-        sendToRenderer('update-status', 'Listening...');
+        if (pendingTranscriptParts.length > 0) {
+            schedulePendingDispatch();
+        } else if (!isAnyChannelSpeaking()) {
+            sendToRenderer('update-status', 'Listening...');
+        }
         return;
     }
 
@@ -307,15 +447,23 @@ async function handleSpeechEnd(audioData) {
 
         if (!transcription || transcription.length < 3) {
             console.log('[LocalAI] Empty or filler transcription, skipping');
-            sendToRenderer('update-status', 'Listening...');
+            if (pendingTranscriptParts.length > 0) {
+                schedulePendingDispatch();
+            } else if (!isAnyChannelSpeaking()) {
+                sendToRenderer('update-status', 'Listening...');
+            }
             return;
         }
 
-        sendToRenderer('update-status', 'Generating response...');
-        await sendToLlama(transcription);
+        pendingTranscriptParts.push(transcription.trim());
+        schedulePendingDispatch();
     } catch (error) {
         console.error('[LocalAI] Transcription error:', error);
-        sendToRenderer('update-status', 'Listening...');
+        if (pendingTranscriptParts.length > 0) {
+            schedulePendingDispatch();
+        } else {
+            sendToRenderer('update-status', 'Listening...');
+        }
     }
 }
 
