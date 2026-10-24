@@ -289,58 +289,82 @@ async function sendToGroq(transcription) {
     }
 
     const config = getConfig();
-    const modelToUse = config.groqModel;
-
-    console.log(`Sending to Groq (${modelToUse}):`, transcription.substring(0, 100) + '...');
-    logTransportEvent('groq.text.request', {
-        model: modelToUse,
-        transcription,
-    });
+    const primaryModel = config.groqModel || 'qwen/qwen3.8-27b';
+    const candidateModels = [primaryModel, 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'].filter(
+        (m, idx, arr) => m && arr.indexOf(m) === idx
+    );
 
     groqConversationHistory.push({
         role: 'user',
         content: transcription.trim(),
     });
 
-    if (groqConversationHistory.length > 6) {
-        groqConversationHistory = groqConversationHistory.slice(-6);
+    if (groqConversationHistory.length > 4) {
+        groqConversationHistory = groqConversationHistory.slice(-4);
     }
 
-    try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${groqApiKey}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model: modelToUse,
-                messages: [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...groqConversationHistory],
-                stream: true,
-                temperature: 0.7,
-                max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
-                ...getGroqReasoningOptions(modelToUse, config.disableGroqThinking),
-            }),
-        });
+    let response = null;
+    let activeModel = primaryModel;
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Groq API error:', response.status, errorText);
+    try {
+        for (let attempt = 0; attempt < candidateModels.length + 1; attempt++) {
+            const modelToTry = candidateModels[attempt] || primaryModel;
+            if (attempt === candidateModels.length) {
+                // All models hit rate limit simultaneously; wait 1.5s for bucket reset and retry primary
+                await new Promise(resolve => setTimeout(resolve, 1500));
+            }
+            activeModel = modelToTry;
+            console.log(`Sending to Groq (${activeModel}):`, transcription.substring(0, 100) + '...');
+            logTransportEvent('groq.text.request', {
+                model: activeModel,
+                transcription,
+            });
+
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${groqApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model: activeModel,
+                    messages: [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...groqConversationHistory],
+                    stream: true,
+                    temperature: 0.5,
+                    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                    ...getGroqReasoningOptions(activeModel, config.disableGroqThinking),
+                }),
+            });
+
+            if (res.ok) {
+                response = res;
+                break;
+            }
+
+            const errorText = await res.text();
+            console.warn(`Groq model ${activeModel} returned ${res.status}, switching to fallback...`, errorText);
             logTransportEvent('groq.text.http_error', {
-                status: response.status,
+                model: activeModel,
+                status: res.status,
                 body: errorText,
             });
-            sendToRenderer('update-status', `Groq error: ${response.status}`);
+        }
+
+        if (!response) {
+            groqConversationHistory.pop();
+            sendToRenderer('update-status', 'Listening...');
             return;
         }
 
         logTransportEvent('groq.text.http_response', {
+            model: activeModel,
             status: response.status,
         });
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let fullText = '';
+        let lineBuffer = '';
         let isFirst = true;
         let finishReason = null;
 
@@ -350,11 +374,14 @@ async function sendToGroq(transcription) {
 
             const chunk = decoder.decode(value, { stream: true });
             logTransportEvent('groq.text.stream_chunk', { chunk });
-            const lines = chunk.split('\n').filter(line => line.trim() !== '');
+            lineBuffer += chunk;
+            const rawLines = lineBuffer.split('\n');
+            lineBuffer = rawLines.pop() || '';
+            const lines = rawLines.filter(line => line.trim() !== '');
 
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
-                    const data = line.slice(6);
+                    const data = line.slice(6).trim();
                     if (data === '[DONE]') continue;
 
                     try {
@@ -381,7 +408,7 @@ async function sendToGroq(transcription) {
         }
 
         const cleanedResponse = stripThinkingTags(fullText);
-        const modelKey = modelToUse.split('/').pop();
+        const modelKey = activeModel.split('/').pop();
 
         const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
         const historyChars = groqConversationHistory.reduce((sum, msg) => sum + (msg.content || '').length, 0);
@@ -395,33 +422,31 @@ async function sendToGroq(transcription) {
                 role: 'assistant',
                 content: cleanedResponse,
             });
-
+            if (groqConversationHistory.length > 4) {
+                groqConversationHistory = groqConversationHistory.slice(-4);
+            }
             saveConversationTurn(transcription, cleanedResponse);
         } else {
-            console.warn(`Groq returned no final answer (${modelToUse})`);
-            logTransportEvent('groq.text.empty_response', {
-                model: modelToUse,
-                fullText,
-                finishReason,
-            });
-            sendToRenderer('new-response', GROQ_EMPTY_RESPONSE_MESSAGE);
-            sendToRenderer('update-status', 'Groq reached the completion-token limit');
+            console.warn(`Groq returned empty answer (${activeModel}), ignoring`);
+            groqConversationHistory.pop();
+            sendToRenderer('update-status', 'Listening...');
             return;
         }
 
         logTransportEvent('groq.text.completed', {
-            model: modelToUse,
+            model: activeModel,
             response: cleanedResponse,
         });
-        console.log(`Groq response completed (${modelToUse})`);
+        console.log(`Groq response completed (${activeModel})`);
         sendToRenderer('update-status', 'Listening...');
     } catch (error) {
         console.error('Error calling Groq API:', error);
+        groqConversationHistory.pop();
         logTransportEvent('groq.text.error', {
             error: error.message,
             stack: error.stack,
         });
-        sendToRenderer('update-status', 'Groq error: ' + error.message);
+        sendToRenderer('update-status', 'Listening...');
     }
 }
 

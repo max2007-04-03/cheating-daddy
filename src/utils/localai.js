@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getSystemPrompt } = require('./prompts');
 const { sendToRenderer, initializeNewSession, saveConversationTurn, sendToGroq, sendImageToGroq, hasGroqKey } = require('./gemini');
-const { getGroqApiKey } = require('../storage');
+const { getGroqApiKey, getPreferences } = require('../storage');
 const {
     ensureNativeBinary,
     ensureLlamaModel,
@@ -31,10 +31,10 @@ let silenceFrameCount = 0;
 let speechFrameCount = 0;
 
 const VAD_MODES = {
-    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 10 },
-    NORMAL: { energyThreshold: 0.007, speechFramesRequired: 2, silenceFramesRequired: 10 },
-    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 8 },
-    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 8 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 14 },
+    NORMAL: { energyThreshold: 0.007, speechFramesRequired: 2, silenceFramesRequired: 14 },
+    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 10 },
+    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 10 },
 };
 
 let vadConfig = VAD_MODES.NORMAL;
@@ -131,11 +131,29 @@ function createWavBuffer(pcm16Buffer) {
     return Buffer.concat([header, pcm16Buffer]);
 }
 
+const WHISPER_INTERVIEW_PROMPT =
+    'Java Developer technical interview. Terms: OOP, Object-Oriented Programming, SOLID, encapsulation, inheritance, polymorphism, abstraction, JVM, JDK, JRE, bytecode, JIT compiler, Garbage Collector, Heap, Stack, Metaspace, OutOfMemoryError, StackOverflowError, equals, hashCode, String Pool, StringBuilder, immutable, ArrayList, LinkedList, HashMap, ConcurrentHashMap, TreeMap, Comparable, Comparator, Generics, PECS, Stream API, Optional, Runnable, Callable, volatile, synchronized, Deadlock, Spring Boot, IoC, Dependency Injection, Bean, Hibernate, JPA, N+1, SQL, JOIN, ACID, B-Tree index, JUnit, Mockito, Maven, Docker.';
+
 function isWhisperHallucination(text) {
     if (!text) return true;
-    const cleaned = text.trim().toLowerCase().replace(/[.,!?;:()]/g, '');
-    const hallucinations = ['thank you', 'thanks for watching', 'you', 'subtitles by', 'bye', 'thank you for watching', 'mbc', 'subscribe', 'silence', 'so'];
-    return hallucinations.includes(cleaned) || cleaned.length < 2;
+    const cleaned = text.trim().toLowerCase().replace(/[.,!?;:()'"\-]/g, '').replace(/\s+/g, ' ');
+    const ignoredPhrases = [
+        'thank you', 'thanks for watching', 'you', 'subtitles by', 'bye',
+        'thank you for watching', 'mbc', 'subscribe', 'silence', 'so',
+        'yeah', 'yes', 'no', 'okay', 'ok', 'im sorry', 'i am sorry', 'sorry',
+        'uhhuh', 'mmhmm', 'right', 'sure', 'alright', 'all right', 'hello', 'hi',
+        'one second', 'one moment', 'wait a second', 'let me see', 'i dont know',
+        'is my name', 'thank you very much', 'thanks', 'good', 'great', 'nice',
+        'can you hear me', 'yes i can hear you'
+    ];
+    if (ignoredPhrases.includes(cleaned) || cleaned.length < 4) {
+        return true;
+    }
+    // Filter out non-English/non-Cyrillic script hallucinations on mumbles (e.g. Icelandic þ, ð, æ)
+    if (/[þðæøå]/i.test(cleaned)) {
+        return true;
+    }
+    return false;
 }
 
 async function transcribeWithGroq(pcm16kBuffer) {
@@ -145,50 +163,70 @@ async function transcribeWithGroq(pcm16kBuffer) {
     }
 
     const wavBuffer = createWavBuffer(pcm16kBuffer);
-    const formData = new FormData();
-    formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'speech.wav');
-    formData.append('model', 'whisper-large-v3-turbo');
-    formData.append('response_format', 'json');
-    formData.append('temperature', '0.0');
+    const prefs = getPreferences ? getPreferences() : {};
+    const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
+    const langCode = selectedLang.startsWith('ru') ? 'ru' : selectedLang.startsWith('uk') ? 'uk' : 'en';
 
-    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${groqApiKey}`,
-        },
-        body: formData,
-    });
+    const whisperModels = ['whisper-large-v3', 'whisper-large-v3-turbo'];
+    let lastError = null;
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Groq Whisper returned HTTP ${response.status}: ${errorText}`);
+    for (const modelName of whisperModels) {
+        try {
+            const formData = new FormData();
+            formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'speech.wav');
+            formData.append('model', modelName);
+            formData.append('response_format', 'json');
+            formData.append('temperature', '0.0');
+            formData.append('language', langCode);
+            formData.append('prompt', WHISPER_INTERVIEW_PROMPT);
+
+            const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${groqApiKey}`,
+                },
+                body: formData,
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                lastError = new Error(`Groq Whisper (${modelName}) HTTP ${response.status}: ${errorText}`);
+                console.warn(lastError.message);
+                continue;
+            }
+
+            const result = await response.json();
+            return result.text?.trim() || '';
+        } catch (err) {
+            lastError = err;
+            console.warn(`[LocalAI] Whisper model ${modelName} failed, trying fallback:`, err.message);
+        }
     }
 
-    const result = await response.json();
-    return result.text?.trim() || '';
+    throw lastError || new Error('All Groq Whisper models failed');
 }
 
 async function transcribeAudio(pcm16kBuffer) {
     if (hasGroqKey()) {
         try {
-            console.log('[LocalAI] Transcribing with Groq whisper-large-v3-turbo...');
+            console.log('[LocalAI] Transcribing with Groq Whisper (large-v3 + Java vocab)...');
             const t0 = Date.now();
             const text = await transcribeWithGroq(pcm16kBuffer);
             console.log(`[LocalAI] Groq Whisper transcribed in ${Date.now() - t0}ms:`, text);
             if (isWhisperHallucination(text)) {
-                console.log('[LocalAI] Ignored Whisper silence/hallucination:', text);
+                console.log('[LocalAI] Ignored filler/silence/hallucination:', text);
                 return '';
             }
             return text;
         } catch (error) {
             console.error('[LocalAI] Groq Whisper error:', error.message);
-            if (!whisperBaseUrl) throw error;
+            if (!whisperBaseUrl) return '';
             console.log('[LocalAI] Falling back to local whisper...');
         }
     }
 
     if (!whisperBaseUrl) {
-        throw new Error('Whisper server is not running and Groq key is unavailable');
+        return '';
     }
 
     const wavBuffer = createWavBuffer(pcm16kBuffer);
@@ -224,8 +262,8 @@ async function handleSpeechEnd(audioData) {
     try {
         const transcription = await transcribeAudio(audioData);
 
-        if (!transcription || transcription.length < 2) {
-            console.log('[LocalAI] Empty transcription, skipping');
+        if (!transcription || transcription.length < 3) {
+            console.log('[LocalAI] Empty or filler transcription, skipping');
             sendToRenderer('update-status', 'Listening...');
             return;
         }
@@ -234,7 +272,7 @@ async function handleSpeechEnd(audioData) {
         await sendToLlama(transcription);
     } catch (error) {
         console.error('[LocalAI] Transcription error:', error);
-        sendToRenderer('update-status', 'Transcription error: ' + error.message);
+        sendToRenderer('update-status', 'Listening...');
     }
 }
 
