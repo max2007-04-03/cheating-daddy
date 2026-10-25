@@ -1,3 +1,4 @@
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch (_) {}
 const { GoogleGenAI, Modality } = require('@google/genai');
 const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
@@ -467,56 +468,130 @@ async function sendToGroq(transcription) {
     }
 }
 
+const SCREEN_ANALYSIS_SYSTEM_PROMPT = `You are a real-time interview teleprompter for a Java / Spring / Backend developer. The user will read your response out loud directly to the interviewer.
+
+CRITICAL LANGUAGE & STYLE RULES:
+- ALWAYS write in simple, natural, everyday spoken English (B1/B2 level). Never use fancy textbook words ("paradigm", "facilitate", "leverage", "utilize").
+- Break your response into short visual paragraphs (1 to 3 short sentences per paragraph) with an empty line between paragraphs so the user can scan and read it effortlessly.
+- Bold ONLY the key technical terms, annotations, method names, line numbers, or bug names so the eye catches them immediately.
+- Never use markdown headers (#), tables, or introductory filler ("Sure, here is the code review:"). Start immediately with the first point.
+
+HOW TO HANDLE WHAT IS ON THE SCREEN:
+1. IF THE SCREEN SHOWS CODE FOR CODE REVIEW (or has bugs / bad practices):
+   - Go through every important bug, architectural issue, or bad practice one by one, each in its own short paragraph.
+   - For each issue, clearly state **what the problem is** (mentioning the exact annotation, method, variable, or line), **why it causes a bug or bad behavior**, and **how to fix it** in simple spoken English.
+   - Check carefully for classic Java / Spring / SQL interview traps:
+     * **@Transactional** on a **private** method, self-invocation (**this.method()**), or catching exceptions without rethrowing.
+     * **N+1 query problem** or calling the database / external API inside a **for** loop instead of batching (e.g. **findAllById**).
+     * Thread-safety bugs: using a non-thread-safe **HashMap**, **ArrayList**, or **SimpleDateFormat** as a shared field inside a singleton **@Service** or **@Component** (suggest **ConcurrentHashMap** or thread-safe alternatives).
+     * Comparing **String** or boxed wrapper objects (**Integer**, **Long**) using **==** instead of **.equals()**.
+     * Calling **Optional.get()** without checking (throws **NoSuchElementException**; suggest **.orElseThrow()**) or possible **NullPointerException**.
+     * Using **@Autowired** field injection instead of **final** fields with **constructor injection**.
+     * Overriding **equals()** without **hashCode()**, or using mutable objects as **HashMap** keys.
+     * Unclosed resources (**Connection**, **InputStream**, **ResultSet**) without **try-with-resources**.
+     * Removing elements from a collection inside a **for-each** loop (**ConcurrentModificationException**).
+     * Swallowing exceptions with an empty **catch** block or logging without proper handling.
+   - Do NOT dump a full rewritten class when doing a Code Review unless the screen explicitly asks to write code from scratch.
+
+2. IF THE SCREEN SHOWS A "WHAT WILL THIS CODE PRINT / OUTPUT?" PUZZLE:
+   - State the exact output in the very first sentence, then explain why step by step in 2 to 3 short spoken paragraphs.
+
+3. IF THE SCREEN SHOWS A CODING TASK / ALGORITHM / SQL QUERY TO IMPLEMENT:
+   - First give 2 short spoken paragraphs explaining the idea and time/space complexity, then provide the clean, working Java or SQL code block.`;
+
 async function sendImageToGroq(base64Data, prompt) {
     const groqApiKey = getGroqApiKey();
+    if (!groqApiKey) {
+        return { success: false, error: 'No Groq API key configured' };
+    }
     const config = getConfig();
-    const model = config.groqImageModel;
+    const model = config.groqImageModel || 'qwen/qwen3.8-27b';
+
+    if (activeGroqAbortController) {
+        try {
+            activeGroqAbortController.abort();
+        } catch (_) {}
+        activeGroqAbortController = null;
+    }
+    const abortController = new AbortController();
+    activeGroqAbortController = abortController;
+
+    const recentSpokenContext =
+        lastGroqTranscriptionText && (Date.now() - lastGroqTranscriptionTime < 25000)
+            ? `\n\n(Note: The interviewer also recently said out loud: "${lastGroqTranscriptionText}" — take this into account if it refers to the screen.)`
+            : '';
+
+    const fullUserPrompt = (prompt || 'Analyze this screen for my Java technical interview.') + recentSpokenContext;
 
     logTransportEvent('groq.image.request', {
         model,
-        prompt,
+        prompt: fullUserPrompt,
         imageBytes: Buffer.byteLength(base64Data, 'base64'),
     });
 
-    try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${groqApiKey}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model,
-                messages: [
-                    { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: prompt },
-                            {
-                                type: 'image_url',
-                                image_url: {
-                                    url: `data:image/jpeg;base64,${base64Data}`,
-                                },
-                            },
-                        ],
-                    },
-                ],
-                stream: true,
-                temperature: 0.7,
-                max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
-                ...getGroqReasoningOptions(model, config.disableGroqThinking),
-            }),
-        });
+    sendToRenderer('update-status', 'Analyzing screen (Code Review)...');
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Groq image API error:', response.status, errorText);
-            logTransportEvent('groq.image.http_error', {
-                status: response.status,
-                body: errorText,
+    try {
+        let response = null;
+        let lastErrorText = '';
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) {
+                console.log(`Retrying Groq vision after rate-limit pause (attempt ${attempt + 1}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, 1600));
+            }
+
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                signal: abortController.signal,
+                headers: {
+                    Authorization: `Bearer ${groqApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [
+                        { role: 'system', content: SCREEN_ANALYSIS_SYSTEM_PROMPT },
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: fullUserPrompt },
+                                {
+                                    type: 'image_url',
+                                    image_url: {
+                                        url: `data:image/jpeg;base64,${base64Data}`,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                    stream: true,
+                    temperature: 0.4,
+                    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                    ...getGroqReasoningOptions(model, config.disableGroqThinking),
+                }),
             });
-            return { success: false, error: `Groq error: ${response.status}` };
+
+            if (res.ok) {
+                response = res;
+                break;
+            }
+
+            lastErrorText = await res.text();
+            console.warn(`Groq image API attempt ${attempt + 1} returned ${res.status}:`, lastErrorText);
+            logTransportEvent('groq.image.http_error', {
+                status: res.status,
+                body: lastErrorText,
+            });
+
+            if (res.status !== 429 && res.status < 500) {
+                break;
+            }
+        }
+
+        if (!response) {
+            sendToRenderer('update-status', 'Listening...');
+            return { success: false, error: `Groq vision error: ${lastErrorText.slice(0, 120)}` };
         }
 
         logTransportEvent('groq.image.http_response', {
@@ -526,6 +601,7 @@ async function sendImageToGroq(base64Data, prompt) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let fullText = '';
+        let lineBuffer = '';
         let isFirst = true;
         let finishReason = null;
 
@@ -535,12 +611,15 @@ async function sendImageToGroq(base64Data, prompt) {
 
             const chunk = decoder.decode(value, { stream: true });
             logTransportEvent('groq.image.stream_chunk', { chunk });
-            const lines = chunk.split('\n').filter(line => line.trim() !== '');
+            lineBuffer += chunk;
+            const rawLines = lineBuffer.split('\n');
+            lineBuffer = rawLines.pop() || '';
+            const lines = rawLines.filter(line => line.trim() !== '');
 
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
 
-                const data = line.slice(6);
+                const data = line.slice(6).trim();
                 if (data === '[DONE]') continue;
 
                 try {
@@ -566,6 +645,8 @@ async function sendImageToGroq(base64Data, prompt) {
         }
 
         const cleanedResponse = stripThinkingTags(fullText);
+        sendToRenderer('update-status', 'Listening...');
+
         if (!cleanedResponse) {
             logTransportEvent('groq.image.empty_response', {
                 model,
@@ -575,13 +656,17 @@ async function sendImageToGroq(base64Data, prompt) {
             return { success: false, error: GROQ_EMPTY_RESPONSE_MESSAGE };
         }
 
-        saveScreenAnalysis(prompt, cleanedResponse, model);
+        saveScreenAnalysis(fullUserPrompt, cleanedResponse, model);
         logTransportEvent('groq.image.completed', {
             model,
             response: cleanedResponse,
         });
         return { success: true, text: cleanedResponse, model };
     } catch (error) {
+        sendToRenderer('update-status', 'Listening...');
+        if (error && error.name === 'AbortError') {
+            return { success: false, error: 'Aborted' };
+        }
         console.error('Error calling Groq image API:', error);
         logTransportEvent('groq.image.error', {
             error: error.message,

@@ -1,3 +1,4 @@
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch (_) {}
 const fs = require('fs');
 const path = require('path');
 const { getSystemPrompt } = require('./prompts');

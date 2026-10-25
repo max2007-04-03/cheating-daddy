@@ -226,7 +226,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             // Get screen capture for screenshots
             mediaStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
-                    frameRate: 1,
+                    frameRate: 5,
                     width: { ideal: 1920 },
                     height: { ideal: 1080 },
                 },
@@ -260,10 +260,10 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
                 // First try to get system audio via getDisplayMedia (works on newer browsers)
                 mediaStream = await navigator.mediaDevices.getDisplayMedia({
                     video: {
-                        frameRate: 1,
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
-                    },
+                    frameRate: 5,
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
+                },
                     audio: {
                         sampleRate: SAMPLE_RATE,
                         channelCount: 1,
@@ -283,10 +283,10 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
                 // Fallback to screen-only capture
                 mediaStream = await navigator.mediaDevices.getDisplayMedia({
                     video: {
-                        frameRate: 1,
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
-                    },
+                    frameRate: 5,
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
+                },
                     audio: false,
                 });
             }
@@ -321,7 +321,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             // Windows - use display media with loopback for system audio
             mediaStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
-                    frameRate: 1,
+                    frameRate: 5,
                     width: { ideal: 1920 },
                     height: { ideal: 1080 },
                 },
@@ -559,10 +559,10 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
     );
 }
 
-const MANUAL_SCREENSHOT_PROMPT = `Help me on this page, give me the answer no bs, complete answer.
-So if its a code question, give me the approach in few bullet points, then the entire code. Also if theres anything else i need to know, tell me.
-If its a question about the website, give me the answer no bs, complete answer.
-If its a mcq question, give me the answer no bs, complete answer.`;
+const MANUAL_SCREENSHOT_PROMPT = `Analyze this screenshot for my Java / Spring / Backend technical interview:
+1. If it shows CODE FOR CODE REVIEW (or asks what is wrong / how to improve it): find all bugs, Spring/Hibernate/JPA traps, concurrency/thread-safety issues, performance problems, and bad practices. Explain each issue in its own short visual paragraph (2-3 simple spoken sentences: what the bug is, why it fails, and how to fix it) so I can read it out loud naturally.
+2. If it shows a "What will this code print/output?" puzzle: state the exact output in the first sentence, then explain why step by step in simple spoken English.
+3. If it shows a coding task / algorithm / SQL query to write: give 2 short spoken paragraphs explaining the approach, followed by the clean, working code.`;
 
 async function captureManualScreenshot(imageQuality = null) {
     console.log('Manual screenshot triggered');
@@ -570,39 +570,43 @@ async function captureManualScreenshot(imageQuality = null) {
 
     if (!mediaStream) {
         console.error('No media stream available');
-        return;
+        return { success: false, error: 'No active screen capture session' };
     }
 
-    // Lazy init of video element
+    // Lazy init of video element if not already pre-warmed
     if (!hiddenVideo) {
         hiddenVideo = document.createElement('video');
         hiddenVideo.srcObject = mediaStream;
         hiddenVideo.muted = true;
         hiddenVideo.playsInline = true;
         await hiddenVideo.play();
+    }
 
+    if (hiddenVideo.readyState < 2) {
         await new Promise(resolve => {
             if (hiddenVideo.readyState >= 2) return resolve();
-            hiddenVideo.onloadedmetadata = () => resolve();
+            const timeout = setTimeout(resolve, 800);
+            hiddenVideo.onloadeddata = () => {
+                clearTimeout(timeout);
+                resolve();
+            };
         });
+    }
 
-        // Lazy init of canvas based on video dimensions
+    if (!offscreenCanvas) {
         offscreenCanvas = document.createElement('canvas');
-        offscreenCanvas.width = hiddenVideo.videoWidth;
-        offscreenCanvas.height = hiddenVideo.videoHeight;
         offscreenContext = offscreenCanvas.getContext('2d');
     }
 
-    // Check if video is ready
     if (hiddenVideo.readyState < 2) {
         console.warn('Video not ready yet, skipping screenshot');
-        return;
+        return { success: false, error: 'Screen video stream not ready yet' };
     }
 
-    // Downscale to max 1280px wide for faster transfer — vision models don't need 4K
-    const MAX_WIDTH = 1280;
-    const srcW = hiddenVideo.videoWidth;
-    const srcH = hiddenVideo.videoHeight;
+    // Use 1440px max width so small IDE code characters (==, @Transactional, generics) stay crisp while keeping payload ~80KB
+    const MAX_WIDTH = 1440;
+    const srcW = hiddenVideo.videoWidth || 1440;
+    const srcH = hiddenVideo.videoHeight || 810;
     let destW = srcW;
     let destH = srcH;
     if (srcW > MAX_WIDTH) {
@@ -619,52 +623,60 @@ async function captureManualScreenshot(imageQuality = null) {
             qualityValue = 0.85;
             break;
         case 'medium':
-            qualityValue = 0.6;
+            qualityValue = 0.78;
             break;
         case 'low':
-            qualityValue = 0.4;
+            qualityValue = 0.6;
             break;
         default:
-            qualityValue = 0.6;
+            qualityValue = 0.78;
     }
 
-    offscreenCanvas.toBlob(
-        async blob => {
-            if (!blob) {
-                console.error('Failed to create blob from canvas');
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                const base64data = reader.result.split(',')[1];
-
-                if (!base64data || base64data.length < 100) {
-                    console.error('Invalid base64 data generated');
+    return new Promise(resolve => {
+        offscreenCanvas.toBlob(
+            blob => {
+                if (!blob) {
+                    console.error('Failed to create blob from canvas');
+                    resolve({ success: false, error: 'Failed to create screenshot blob' });
                     return;
                 }
 
-                console.log(`Sending image: ${destW}x${destH}, ~${Math.round(base64data.length / 1024)}KB`);
+                const reader = new FileReader();
+                reader.onloadend = async () => {
+                    try {
+                        const base64data = reader.result.split(',')[1];
 
-                // Send image with prompt to HTTP API (response streams via IPC events)
-                const result = await ipcRenderer.invoke('send-image-content', {
-                    data: base64data,
-                    prompt: MANUAL_SCREENSHOT_PROMPT,
-                });
+                        if (!base64data || base64data.length < 100) {
+                            console.error('Invalid base64 data generated');
+                            resolve({ success: false, error: 'Invalid screenshot image data' });
+                            return;
+                        }
 
-                if (result.success) {
-                    console.log(`Image response completed from ${result.model}`);
-                    // Response already displayed via streaming events (new-response/update-response)
-                } else {
-                    console.error('Failed to get image response:', result.error);
-                    cheatingDaddy.addNewResponse(`Error: ${result.error}`);
-                }
-            };
-            reader.readAsDataURL(blob);
-        },
-        'image/jpeg',
-        qualityValue
-    );
+                        console.log(`Sending screenshot for Code Review: ${destW}x${destH}, ~${Math.round(base64data.length / 1024)}KB`);
+
+                        const result = await ipcRenderer.invoke('send-image-content', {
+                            data: base64data,
+                            prompt: MANUAL_SCREENSHOT_PROMPT,
+                        });
+
+                        if (result.success) {
+                            console.log(`Image response completed from ${result.model}`);
+                        } else {
+                            console.error('Failed to get image response:', result.error);
+                            cheatingDaddy.addNewResponse(`Error: ${result.error}`);
+                        }
+                        resolve(result);
+                    } catch (err) {
+                        console.error('Screenshot IPC error:', err);
+                        resolve({ success: false, error: err.message });
+                    }
+                };
+                reader.readAsDataURL(blob);
+            },
+            'image/jpeg',
+            qualityValue
+        );
+    });
 }
 
 // Expose functions to global scope for external access

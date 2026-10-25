@@ -476,7 +476,11 @@ export class AssistantView extends LitElement {
         if (window.captureManualScreenshot) {
             this.isAnalyzing = true;
             this._responseCountWhenStarted = this.responses.length;
-            window.captureManualScreenshot();
+            try {
+                await window.captureManualScreenshot();
+            } finally {
+                this.isAnalyzing = false;
+            }
         }
     }
 
