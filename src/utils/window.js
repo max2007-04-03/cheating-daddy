@@ -22,7 +22,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         height: windowHeight,
         minWidth: MIN_WINDOW_SIZE.width,
         minHeight: MIN_WINDOW_SIZE.height,
-        resizable: true,
+        resizable: false,
         frame: false,
         transparent: true,
         hasShadow: false,
@@ -312,6 +312,29 @@ function setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef) {
             if (!isLiveMode) {
                 mainWindow.setIgnoreMouseEvents(false);
             }
+        }
+    });
+
+    ipcMain.handle('stealth-get-bounds', () => {
+        if (!mainWindow.isDestroyed()) {
+            return mainWindow.getBounds();
+        }
+        return null;
+    });
+
+    ipcMain.on('stealth-set-bounds', (event, bounds) => {
+        if (!mainWindow.isDestroyed() && bounds) {
+            const minW = MIN_WINDOW_SIZE.width;
+            const minH = MIN_WINDOW_SIZE.height;
+            const nextBounds = {
+                x: Math.round(bounds.x),
+                y: Math.round(bounds.y),
+                width: Math.max(minW, Math.round(bounds.width)),
+                height: Math.max(minH, Math.round(bounds.height)),
+            };
+            mainWindow.setResizable(true);
+            mainWindow.setBounds(nextBounds);
+            mainWindow.setResizable(false);
         }
     });
 

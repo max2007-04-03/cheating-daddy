@@ -122,7 +122,7 @@ export class OnboardingView extends LitElement {
             border-radius: 8px;
             font-size: 13px;
             font-weight: 500;
-            cursor: pointer;
+            cursor: default !important;
             transition: opacity 0.15s;
         }
 
@@ -135,7 +135,7 @@ export class OnboardingView extends LitElement {
             border: none;
             color: #888888;
             font-size: 11px;
-            cursor: pointer;
+            cursor: default !important;
             padding: 4px 8px;
         }
 

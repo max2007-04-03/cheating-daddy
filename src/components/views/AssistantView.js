@@ -8,9 +8,9 @@ export class AssistantView extends LitElement {
             flex-direction: column;
         }
 
-        * {
+        *, *::before, *::after {
             font-family: var(--font);
-            cursor: default;
+            cursor: default !important;
         }
 
         /* ── Response area ── */
@@ -24,17 +24,17 @@ export class AssistantView extends LitElement {
             padding: var(--space-sm) var(--space-md);
             scroll-behavior: smooth;
             user-select: text;
-            cursor: text;
+            cursor: default !important;
             color: var(--text-primary);
         }
 
         .response-container * {
             user-select: text;
-            cursor: text;
+            cursor: default !important;
         }
 
         .response-container a {
-            cursor: pointer;
+            cursor: default !important;
         }
 
         .response-container [data-word] {
@@ -179,7 +179,7 @@ export class AssistantView extends LitElement {
             background: none;
             border: none;
             color: var(--text-muted);
-            cursor: pointer;
+            cursor: default !important;
             padding: var(--space-xs);
             border-radius: var(--radius-sm);
             display: flex;
@@ -256,7 +256,7 @@ export class AssistantView extends LitElement {
             background: var(--bg-elevated);
             border: 1px solid var(--border);
             color: var(--text-secondary);
-            cursor: pointer;
+            cursor: default !important;
             font-size: var(--font-size-xs);
             font-family: var(--font-mono);
             white-space: nowrap;
@@ -287,7 +287,7 @@ export class AssistantView extends LitElement {
             background: var(--bg-elevated);
             border: 1px solid var(--border);
             color: var(--text-primary);
-            cursor: pointer;
+            cursor: default !important;
             font-size: var(--font-size-xs);
             font-family: var(--font-mono);
             white-space: nowrap;

@@ -193,5 +193,71 @@
         <cheating-daddy-app id="cheatingDaddy"></cheating-daddy-app>
         <script src="script.js"></script>
         <script src="utils/renderer.js"></script>
+        <script>
+            (function setupStealthWindowResize() {
+                if (!window.require) return;
+                const { ipcRenderer } = window.require('electron');
+                const EDGE_SIZE = 10;
+                let resizeState = null;
+
+                function detectResizeEdges(e) {
+                    const w = window.innerWidth;
+                    const h = window.innerHeight;
+                    const x = e.clientX;
+                    const y = e.clientY;
+                    const left = x <= EDGE_SIZE;
+                    const right = x >= w - EDGE_SIZE;
+                    const top = y <= EDGE_SIZE;
+                    const bottom = y >= h - EDGE_SIZE;
+                    if (!left && !right && !top && !bottom) return null;
+                    return { left, right, top, bottom };
+                }
+
+                window.addEventListener('mousedown', async (e) => {
+                    if (e.button !== 0) return;
+                    const edges = detectResizeEdges(e);
+                    if (!edges) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const startBounds = await ipcRenderer.invoke('stealth-get-bounds');
+                    if (!startBounds) return;
+                    resizeState = {
+                        edges,
+                        startX: e.screenX,
+                        startY: e.screenY,
+                        startBounds,
+                    };
+                }, true);
+
+                window.addEventListener('mousemove', (e) => {
+                    if (!resizeState) return;
+                    const dx = e.screenX - resizeState.startX;
+                    const dy = e.screenY - resizeState.startY;
+                    const b = { ...resizeState.startBounds };
+
+                    if (resizeState.edges.right) {
+                        b.width = resizeState.startBounds.width + dx;
+                    }
+                    if (resizeState.edges.bottom) {
+                        b.height = resizeState.startBounds.height + dy;
+                    }
+                    if (resizeState.edges.left) {
+                        const newWidth = Math.max(440, resizeState.startBounds.width - dx);
+                        b.x = resizeState.startBounds.x + (resizeState.startBounds.width - newWidth);
+                        b.width = newWidth;
+                    }
+                    if (resizeState.edges.top) {
+                        const newHeight = Math.max(240, resizeState.startBounds.height - dy);
+                        b.y = resizeState.startBounds.y + (resizeState.startBounds.height - newHeight);
+                        b.height = newHeight;
+                    }
+                    ipcRenderer.send('stealth-set-bounds', b);
+                }, true);
+
+                window.addEventListener('mouseup', () => {
+                    resizeState = null;
+                }, true);
+            })();
+        </script>
     </body>
 </html>

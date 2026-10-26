@@ -15,7 +15,7 @@ export class CheatingDaddyApp extends LitElement {
             font-family: var(--font);
             margin: 0;
             padding: 0;
-            cursor: default;
+            cursor: default !important;
             user-select: none;
         }
 
@@ -76,7 +76,7 @@ export class CheatingDaddyApp extends LitElement {
             height: 12px;
             border-radius: 50%;
             border: none;
-            cursor: pointer;
+            cursor: default !important;
             padding: 0;
             transition: opacity 0.15s ease;
         }
@@ -151,7 +151,7 @@ export class CheatingDaddyApp extends LitElement {
             color: var(--text-secondary);
             font-size: var(--font-size-sm);
             font-weight: var(--font-weight-medium);
-            cursor: pointer;
+            cursor: default !important;
             transition:
                 color var(--transition),
                 background var(--transition);
@@ -195,7 +195,7 @@ export class CheatingDaddyApp extends LitElement {
             color: var(--danger);
             font-size: var(--font-size-sm);
             font-weight: var(--font-weight-medium);
-            cursor: pointer;
+            cursor: default !important;
             text-align: left;
             transition:
                 background var(--transition),
@@ -275,7 +275,7 @@ export class CheatingDaddyApp extends LitElement {
             align-items: center;
             justify-content: center;
             color: var(--text-muted);
-            cursor: pointer;
+            cursor: default !important;
             background: none;
             border: none;
             padding: var(--space-xs);
@@ -319,7 +319,7 @@ export class CheatingDaddyApp extends LitElement {
         }
 
         .live-bar-text.clickable {
-            cursor: pointer;
+            cursor: default !important;
             transition: color var(--transition);
         }
 

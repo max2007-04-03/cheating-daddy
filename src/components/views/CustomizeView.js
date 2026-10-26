@@ -48,13 +48,13 @@ export class CustomizeView extends LitElement {
                 width: 14px;
                 height: 14px;
                 accent-color: var(--text-primary);
-                cursor: pointer;
+                cursor: default !important;
             }
 
             .toggle-label {
                 color: var(--text-primary);
                 font-size: var(--font-size-sm);
-                cursor: pointer;
+                cursor: default !important;
                 user-select: none;
             }
 
@@ -90,7 +90,7 @@ export class CustomizeView extends LitElement {
                 border-radius: 2px;
                 background: var(--border);
                 outline: none;
-                cursor: pointer;
+                cursor: default !important;
             }
 
             .slider-input::-webkit-slider-thumb {
@@ -142,7 +142,7 @@ export class CustomizeView extends LitElement {
                 border-radius: var(--radius-sm);
                 padding: 9px 12px;
                 font-size: var(--font-size-sm);
-                cursor: pointer;
+                cursor: default !important;
                 transition: background var(--transition);
             }
 
@@ -152,7 +152,7 @@ export class CustomizeView extends LitElement {
 
             .danger-button:disabled {
                 opacity: 0.5;
-                cursor: not-allowed;
+                cursor: default !important;
             }
 
             .status {

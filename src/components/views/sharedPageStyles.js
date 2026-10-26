@@ -127,7 +127,7 @@ export const unifiedPageStyles = css`
         background-repeat: no-repeat;
         background-size: 12px;
         padding-right: 28px;
-        cursor: pointer;
+        cursor: default !important;
     }
 
     textarea.control {

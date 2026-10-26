@@ -72,7 +72,7 @@ export class HelpView extends LitElement {
                 background: var(--bg-elevated);
                 color: var(--text-primary);
                 font-size: var(--font-size-sm);
-                cursor: pointer;
+                cursor: default !important;
                 transition: border-color var(--transition), color var(--transition), background var(--transition);
             }
 

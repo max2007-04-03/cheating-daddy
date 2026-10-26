@@ -56,7 +56,7 @@ export class HistoryView extends LitElement {
                 background: transparent;
                 text-align: left;
                 padding: var(--space-sm) var(--space-md);
-                cursor: pointer;
+                cursor: default !important;
                 transition: background var(--transition);
                 display: flex;
                 align-items: center;
@@ -106,13 +106,13 @@ export class HistoryView extends LitElement {
                 color: var(--text-muted);
                 padding: 0;
                 font-size: var(--font-size-sm);
-                cursor: pointer;
+                cursor: default !important;
                 display: flex;
                 align-items: center;
             }
 
             .back-btn svg {
-                cursor: pointer;
+                cursor: default !important;
             }
 
             .back-btn:hover {
@@ -135,7 +135,7 @@ export class HistoryView extends LitElement {
                 background: transparent;
                 color: var(--text-muted);
                 padding: 6px 10px;
-                cursor: pointer;
+                cursor: default !important;
                 font-size: var(--font-size-xs);
             }
 
@@ -177,7 +177,7 @@ export class HistoryView extends LitElement {
                 padding: 8px 12px;
                 word-break: break-word;
                 user-select: text;
-                cursor: text;
+                cursor: default !important;
                 font-size: var(--font-size-sm);
                 line-height: 1.45;
             }
@@ -242,7 +242,7 @@ export class HistoryView extends LitElement {
                 white-space: pre-wrap;
                 word-break: break-word;
                 user-select: text;
-                cursor: text;
+                cursor: default !important;
             }
 
             .empty {

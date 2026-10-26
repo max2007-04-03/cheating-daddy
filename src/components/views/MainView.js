@@ -68,7 +68,7 @@ export class MainView extends LitElement {
             border-radius: var(--radius-md);
             border: 1px solid rgba(59, 130, 246, 0.45);
             background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(139, 92, 246, 0.09) 100%);
-            cursor: pointer;
+            cursor: default !important;
             transition:
                 border-color 0.2s,
                 background 0.2s;
@@ -141,7 +141,7 @@ export class MainView extends LitElement {
             justify-content: space-between;
             gap: var(--space-md);
             padding: 12px 14px;
-            cursor: pointer;
+            cursor: default !important;
             list-style: none;
         }
 
@@ -199,7 +199,7 @@ export class MainView extends LitElement {
             display: flex;
             align-items: flex-start;
             gap: var(--space-sm);
-            cursor: pointer;
+            cursor: default !important;
         }
 
         .config-checkbox input {
@@ -208,7 +208,7 @@ export class MainView extends LitElement {
             margin-top: 2px;
             padding: 0;
             accent-color: var(--accent);
-            cursor: pointer;
+            cursor: default !important;
         }
 
         .config-checkbox-text {
@@ -265,7 +265,7 @@ export class MainView extends LitElement {
         }
 
         select {
-            cursor: pointer;
+            cursor: default !important;
             appearance: none;
             background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23999' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
             background-position: right 8px center;
@@ -289,7 +289,7 @@ export class MainView extends LitElement {
         .form-hint span.link {
             color: var(--accent);
             text-decoration: none;
-            cursor: pointer;
+            cursor: default !important;
         }
 
         .form-hint span.link:hover {
@@ -329,7 +329,7 @@ export class MainView extends LitElement {
             border-radius: var(--radius-sm);
             font-size: var(--font-size-base);
             font-weight: var(--font-weight-semibold);
-            cursor: pointer;
+            cursor: default !important;
             width: 100%;
             display: flex;
             align-items: center;
@@ -371,7 +371,7 @@ export class MainView extends LitElement {
 
         .start-button.disabled {
             opacity: 0.5;
-            cursor: not-allowed;
+            cursor: default !important;
         }
 
         .start-button.disabled:hover {
@@ -410,7 +410,7 @@ export class MainView extends LitElement {
             background: none;
             color: var(--danger, #ef4444);
             font: inherit;
-            cursor: pointer;
+            cursor: default !important;
         }
 
         .download-cancel:hover {
@@ -466,7 +466,7 @@ export class MainView extends LitElement {
         .mode-link {
             font-size: var(--font-size-sm);
             color: var(--text-secondary);
-            cursor: pointer;
+            cursor: default !important;
             background: none;
             border: none;
             padding: 0;
@@ -493,7 +493,7 @@ export class MainView extends LitElement {
             border-radius: var(--radius-md);
             border: 1px solid var(--border);
             background: var(--bg-elevated);
-            cursor: pointer;
+            cursor: default !important;
             transition:
                 border-color 0.2s,
                 background 0.2s;
@@ -533,7 +533,7 @@ export class MainView extends LitElement {
             background: none;
             border: none;
             color: var(--text-muted);
-            cursor: pointer;
+            cursor: default !important;
             padding: 4px;
             border-radius: var(--radius-sm);
             transition: color 0.2s;
@@ -625,7 +625,7 @@ export class MainView extends LitElement {
 
         .help-link {
             color: var(--accent);
-            cursor: pointer;
+            cursor: default !important;
             text-decoration: none;
         }
 
@@ -667,7 +667,7 @@ export class MainView extends LitElement {
             font-size: var(--font-size-sm);
             font-family: var(--font);
             font-weight: var(--font-weight-semibold);
-            cursor: pointer;
+            cursor: default !important;
             width: 100%;
             transition: opacity 0.15s;
         }
