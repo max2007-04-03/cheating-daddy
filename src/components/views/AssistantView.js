@@ -473,7 +473,7 @@ export class AssistantView extends LitElement {
                     this.audioMode = prefs.audioMode;
                 }
                 if (prefs && prefs.selectedLanguage) {
-                    this.langMode = prefs.selectedLanguage;
+                    this.langMode = prefs.selectedLanguage === 'uk-UA' ? 'uk-UA' : 'en-US';
                 }
             }).catch(() => {});
         }

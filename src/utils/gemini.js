@@ -4,7 +4,7 @@ const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt } = require('./prompts');
-const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getConfig } = require('../storage');
+const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getConfig, getPreferences } = require('../storage');
 const { connectCloud, sendCloudAudio, sendCloudText, sendCloudImage, closeCloud, isCloudActive, setOnTurnComplete } = require('./cloud');
 const { startTransportLog, logTransportEvent, closeTransportLog } = require('./transportLogger');
 
@@ -313,14 +313,16 @@ async function sendToGroq(transcription) {
     const cleanTranscript = transcription.trim();
     const isRecentFollowUp = lastGroqTranscriptionText && (now - lastGroqTranscriptionTime < 15000);
 
-    const hasCyrillic = /[а-яіїєґА-ЯІЇЄҐ]/.test(cleanTranscript);
-    const langInstruction = hasCyrillic
-        ? 'Answer in natural spoken UKRAINIAN (живою українською мовою) with full technical depth (exact internal structures, numbers, methods, Big-O).'
-        : 'Answer in simple spoken B1/B2 ENGLISH with full technical depth (exact internal structures, numbers, methods, Big-O).';
+    const prefs = getPreferences ? getPreferences() : {};
+    const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
+    const isUk = selectedLang.startsWith('uk') || selectedLang.startsWith('ru');
+    const langInstruction = isUk
+        ? 'CRITICAL LANGUAGE RULE: Answer 100% in natural spoken UKRAINIAN (живою українською мовою). Write 4 detailed paragraphs (8-12 sentences total) with exact internal structures, numbers, methods, and Big-O.'
+        : 'CRITICAL LANGUAGE RULE: Answer 100% in simple spoken B1/B2 ENGLISH (even if the transcription contains Cyrillic or phonetic errors). NEVER answer in Ukrainian or Russian. Write 4 detailed paragraphs (8-12 sentences total) with exact internal structures, numbers, methods, and Big-O.';
 
     const userPromptContent = isRecentFollowUp
-        ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Decode any phonetic speech-to-text errors. ${langInstruction}\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
-        : `Decode any phonetic speech-to-text errors in this transcription and answer the intended Java / Backend interview question completely. ${langInstruction}\nQuestion: "${cleanTranscript}"`;
+        ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Silently decode any phonetic speech-to-text errors without mentioning them. ${langInstruction}\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
+        : `Silently decode any phonetic speech-to-text errors in this transcription (never mention the error) and answer the intended Java / Backend interview question completely. ${langInstruction}\nQuestion: "${cleanTranscript}"`;
 
     lastGroqTranscriptionText = cleanTranscript;
     lastGroqTranscriptionTime = now;
@@ -511,12 +513,19 @@ async function sendImageToGroq(base64Data, prompt) {
     const abortController = new AbortController();
     activeGroqAbortController = abortController;
 
+    const prefs = getPreferences ? getPreferences() : {};
+    const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
+    const isUk = selectedLang.startsWith('uk') || selectedLang.startsWith('ru');
+    const screenLangRule = isUk
+        ? '\n\nCRITICAL LANGUAGE RULE: Write Part 1 (Spoken Explanation) in natural spoken UKRAINIAN (живою українською мовою), followed by Part 2 (complete working code block).'
+        : '\n\nCRITICAL LANGUAGE RULE: Write Part 1 (Spoken Explanation) in simple spoken B1/B2 ENGLISH, followed by Part 2 (complete working code block).';
+
     const recentSpokenContext =
         lastGroqTranscriptionText && (Date.now() - lastGroqTranscriptionTime < 25000)
             ? `\n\n(Note: The interviewer also recently said out loud: "${lastGroqTranscriptionText}" — take this into account if it refers to the screen.)`
             : '';
 
-    const fullUserPrompt = (prompt || 'Analyze this screen for my Java technical interview.') + recentSpokenContext;
+    const fullUserPrompt = (prompt || 'Analyze this screen for my Java technical interview.') + screenLangRule + recentSpokenContext;
 
     logTransportEvent('groq.image.request', {
         model,
