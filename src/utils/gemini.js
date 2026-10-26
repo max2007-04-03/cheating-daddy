@@ -88,6 +88,7 @@ function initializeNewSession(profile = null, customPrompt = null) {
     conversationHistory = [];
     screenAnalysisHistory = [];
     groqConversationHistory = [];
+    recentInterviewTurns = [];
     currentProfile = profile;
     currentCustomPrompt = customPrompt;
     try {
@@ -281,6 +282,8 @@ function getGroqReasoningOptions(model, disableThinking) {
 let lastGroqTranscriptionText = '';
 let lastGroqTranscriptionTime = 0;
 let activeGroqAbortController = null;
+let recentInterviewTurns = [];
+const groqModelCooldownUntil = new Map();
 
 async function sendToGroq(transcription) {
     const groqApiKey = getGroqApiKey();
@@ -294,11 +297,31 @@ async function sendToGroq(transcription) {
         return;
     }
 
+    // Filter out short filler sounds/reactions that are not questions and have no technical terms
+    const words = cleanTranscript.split(/\s+/).filter(Boolean);
+    const TECHNICAL_KEYWORD_REGEX = /\b(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|rollback|hibernate|jpa|entity|n\+1|sql|join|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overload|extend|implement|maven|gradle|git)\b/i;
+    const QUESTION_REGEX = /\b(what|how|why|when|where|which|who|whom|whose|explain|describe|tell|compare|difference|define|name|list|can you|could you|do you|does|is there|are there|will it|would it|що|як|чому|коли|де|який|яка|яке|які|розкажи|поясни|назви|різниця|чи можна|что|как|почему|когда|где|какой|какая|какие|расскажи|объясни|назови|разница)\b/i;
+
+    if (words.length <= 2 && !TECHNICAL_KEYWORD_REGEX.test(cleanTranscript) && !QUESTION_REGEX.test(cleanTranscript)) {
+        console.log('[Groq] Ignored non-technical short utterance/filler:', cleanTranscript);
+        sendToRenderer('update-status', 'Listening...');
+        return;
+    }
+
     const config = getConfig();
-    const primaryModel = config.groqModel || 'qwen/qwen3.8-27b';
-    const candidateModels = [primaryModel, 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'].filter(
+    const primaryModel = config.groqModel || 'openai/gpt-oss-120b';
+    const baseCandidateModels = [primaryModel, 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b'].filter(
         (m, idx, arr) => m && arr.indexOf(m) === idx
     );
+
+    const nowTime = Date.now();
+    let candidateModels = baseCandidateModels.filter(m => {
+        const cd = groqModelCooldownUntil.get(m);
+        return !cd || nowTime > cd;
+    });
+    if (candidateModels.length === 0) {
+        candidateModels = baseCandidateModels;
+    }
 
     if (activeGroqAbortController) {
         try {
@@ -371,6 +394,10 @@ async function sendToGroq(transcription) {
 
             const errorText = await res.text();
             console.warn(`Groq model ${activeModel} returned ${res.status}, switching to fallback...`, errorText);
+            if (res.status === 429) {
+                console.warn(`Model ${activeModel} hit 429 rate limit, setting 2-minute cooldown`);
+                groqModelCooldownUntil.set(activeModel, Date.now() + 120000);
+            }
             logTransportEvent('groq.text.http_error', {
                 model: activeModel,
                 status: res.status,
@@ -447,6 +474,10 @@ async function sendToGroq(transcription) {
 
         if (cleanedResponse) {
             saveConversationTurn(transcription, cleanedResponse);
+            recentInterviewTurns.push({ question: cleanTranscript, answer: cleanedResponse });
+            if (recentInterviewTurns.length > 6) {
+                recentInterviewTurns = recentInterviewTurns.slice(-6);
+            }
         } else {
             console.warn(`Groq returned empty answer (${activeModel}), ignoring`);
             groqConversationHistory.pop();
@@ -594,8 +625,13 @@ async function sendImageToGroq(base64Data, prompt) {
         }
 
         if (!response) {
+            const isRateLimit = lastErrorText.includes('rate_limit') || lastErrorText.includes('429');
+            const cleanErr = isRateLimit
+                ? 'Rate limit on vision model. Groq tokens reset in ~1 minute. Please retry shortly.'
+                : `Vision error: ${lastErrorText.slice(0, 100) || 'Request failed'}`;
+            sendToRenderer('new-response', cleanErr);
             sendToRenderer('update-status', 'Listening...');
-            return { success: false, error: `Groq vision error: ${lastErrorText.slice(0, 120)}` };
+            return { success: false, error: cleanErr };
         }
 
         logTransportEvent('groq.image.http_response', {

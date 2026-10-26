@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = {
     onboarded: false,
     layout: 'normal',
     geminiLiveModel: 'gemini-3.8-live',
-    groqModel: 'qwen/qwen3.8-27b',
+    groqModel: 'openai/gpt-oss-120b',
     groqImageModel: 'qwen/qwen3.8-27b',
     disableGroqThinking: true,
 };

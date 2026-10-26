@@ -587,10 +587,10 @@ async function captureManualScreenshot(imageQuality = null) {
         return { success: false, error: 'Screen video stream not ready yet' };
     }
 
-    // Use 1440px max width so small IDE code characters (==, @Transactional, generics) stay crisp while keeping payload ~80KB
-    const MAX_WIDTH = 1440;
-    const srcW = hiddenVideo.videoWidth || 1440;
-    const srcH = hiddenVideo.videoHeight || 810;
+    // Use 960px max width so code characters stay crisp while cutting token cost by ~65% to avoid Groq rate limits
+    const MAX_WIDTH = 960;
+    const srcW = hiddenVideo.videoWidth || 960;
+    const srcH = hiddenVideo.videoHeight || 540;
     let destW = srcW;
     let destH = srcH;
     if (srcW > MAX_WIDTH) {
@@ -604,13 +604,13 @@ async function captureManualScreenshot(imageQuality = null) {
     let qualityValue;
     switch (quality) {
         case 'high':
-            qualityValue = 0.85;
+            qualityValue = 0.82;
             break;
         case 'medium':
-            qualityValue = 0.78;
+            qualityValue = 0.74;
             break;
         case 'low':
-            qualityValue = 0.6;
+            qualityValue = 0.55;
             break;
         default:
             qualityValue = 0.78;
