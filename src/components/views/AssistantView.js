@@ -62,7 +62,10 @@ export class AssistantView extends LitElement {
         .response-container h6 { font-size: 1em; }
 
         .response-container p {
-            margin: 0.6em 0;
+            margin: 0.65em auto;
+            max-width: 500px;
+            line-height: 1.6;
+            letter-spacing: 0.01em;
             color: var(--text-primary);
         }
 
@@ -115,7 +118,8 @@ export class AssistantView extends LitElement {
 
         .response-container strong,
         .response-container b {
-            font-weight: var(--font-weight-semibold);
+            font-weight: 600;
+            color: #38BDF8;
         }
 
         .response-container hr {

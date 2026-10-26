@@ -4,14 +4,20 @@ const storage = require('../storage');
 
 let mouseEventsIgnored = false;
 
-const DEFAULT_MAIN_WINDOW_SIZE = { width: 1100, height: 800 };
-const MIN_WINDOW_SIZE = { width: 700, height: 320 };
+const DEFAULT_MAIN_WINDOW_SIZE = { width: 640, height: 390 };
+const MIN_WINDOW_SIZE = { width: 440, height: 240 };
 
 function createWindow(sendToRenderer, geminiSessionRef) {
     let windowWidth = DEFAULT_MAIN_WINDOW_SIZE.width;
     let windowHeight = DEFAULT_MAIN_WINDOW_SIZE.height;
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const { width: screenWidth } = primaryDisplay.workAreaSize;
+    const initialX = Math.round((screenWidth - windowWidth) / 2);
+    const initialY = 8;
 
     const mainWindow = new BrowserWindow({
+        x: initialX,
+        y: initialY,
         width: windowWidth,
         height: windowHeight,
         minWidth: MIN_WINDOW_SIZE.width,
