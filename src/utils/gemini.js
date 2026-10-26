@@ -317,8 +317,8 @@ async function sendToGroq(transcription) {
     const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
     const isUk = selectedLang.startsWith('uk') || selectedLang.startsWith('ru');
     const langInstruction = isUk
-        ? 'CRITICAL LANGUAGE RULE: Answer 100% in natural spoken UKRAINIAN (живою українською мовою). Write 4 detailed paragraphs (8-12 sentences total) with exact internal structures, numbers, methods, and Big-O.'
-        : 'CRITICAL LANGUAGE RULE: Answer 100% in simple spoken B1/B2 ENGLISH (even if the transcription contains Cyrillic or phonetic errors). NEVER answer in Ukrainian or Russian. Write 4 detailed paragraphs (8-12 sentences total) with exact internal structures, numbers, methods, and Big-O.';
+        ? 'CRITICAL RULE: Answer 100% in natural spoken UKRAINIAN (живою українською мовою). Write 3 short, high-density paragraphs (4-6 sentences total, max 90 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.'
+        : 'CRITICAL RULE: Answer 100% in simple spoken B1/B2 ENGLISH (even if transcription has Cyrillic/errors). NEVER answer in Ukrainian or Russian. Write 3 short, high-density paragraphs (4-6 sentences total, max 90 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.';
 
     const userPromptContent = isRecentFollowUp
         ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Silently decode any phonetic speech-to-text errors without mentioning them. ${langInstruction}\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
