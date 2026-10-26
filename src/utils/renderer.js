@@ -6,6 +6,8 @@ let screenshotInterval = null;
 let audioContext = null;
 let audioProcessor = null;
 let micAudioProcessor = null;
+let micMediaStream = null;
+let micAudioContextInstance = null;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
 const AUDIO_CHUNK_DURATION = 0.1; // seconds
@@ -236,127 +238,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             console.log('macOS screen capture started - audio handled by SystemAudioDump');
 
             if (audioMode === 'mic_only' || audioMode === 'both') {
-                let micStream = null;
-                try {
-                    micStream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            sampleRate: SAMPLE_RATE,
-                            channelCount: 1,
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                            autoGainControl: true,
-                        },
-                        video: false,
-                    });
-                    console.log('macOS microphone capture started');
-                    setupLinuxMicProcessing(micStream);
-                } catch (micError) {
-                    console.warn('Failed to get microphone access on macOS:', micError);
-                }
-            }
-        } else if (isLinux) {
-            // Linux - use display media for screen capture and try to get system audio
-            try {
-                // First try to get system audio via getDisplayMedia (works on newer browsers)
-                mediaStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                    frameRate: 5,
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 },
-                },
-                    audio: {
-                        sampleRate: SAMPLE_RATE,
-                        channelCount: 1,
-                        echoCancellation: false, // Don't cancel system audio
-                        noiseSuppression: false,
-                        autoGainControl: false,
-                    },
-                });
-
-                console.log('Linux system audio capture via getDisplayMedia succeeded');
-
-                // Setup audio processing for Linux system audio
-                setupLinuxSystemAudioProcessing();
-            } catch (systemAudioError) {
-                console.warn('System audio via getDisplayMedia failed, trying screen-only capture:', systemAudioError);
-
-                // Fallback to screen-only capture
-                mediaStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                    frameRate: 5,
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 },
-                },
-                    audio: false,
-                });
-            }
-
-            // Additionally get microphone input for Linux based on audio mode
-            if (audioMode === 'mic_only' || audioMode === 'both') {
-                let micStream = null;
-                try {
-                    micStream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            sampleRate: SAMPLE_RATE,
-                            channelCount: 1,
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                            autoGainControl: true,
-                        },
-                        video: false,
-                    });
-
-                    console.log('Linux microphone capture started');
-
-                    // Setup audio processing for microphone on Linux
-                    setupLinuxMicProcessing(micStream);
-                } catch (micError) {
-                    console.warn('Failed to get microphone access on Linux:', micError);
-                    // Continue without microphone if permission denied
-                }
-            }
-
-            console.log('Linux capture started - system audio:', mediaStream.getAudioTracks().length > 0, 'microphone mode:', audioMode);
-        } else {
-            // Windows - use display media with loopback for system audio
-            mediaStream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    frameRate: 5,
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 },
-                },
-                audio: {
-                    sampleRate: SAMPLE_RATE,
-                    channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-            });
-
-            console.log('Windows capture started with loopback audio');
-
-            // Setup audio processing for Windows loopback audio only
-            setupWindowsLoopbackProcessing();
-
-            if (audioMode === 'mic_only' || audioMode === 'both') {
-                let micStream = null;
-                try {
-                    micStream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            sampleRate: SAMPLE_RATE,
-                            channelCount: 1,
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                            autoGainControl: true,
-                        },
-                        video: false,
-                    });
-                    console.log('Windows microphone capture started');
-                    setupLinuxMicProcessing(micStream);
-                } catch (micError) {
-                    console.warn('Failed to get microphone access on Windows:', micError);
-                }
+                await startMicCapture();
             }
         }
 
@@ -374,9 +256,48 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
     }
 }
 
+async function startMicCapture() {
+    if (micAudioProcessor) return true;
+    try {
+        const micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                sampleRate: SAMPLE_RATE,
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
+            video: false,
+        });
+        console.log('Live microphone capture started');
+        setupLinuxMicProcessing(micStream);
+        return true;
+    } catch (micError) {
+        console.warn('Failed to get microphone access:', micError);
+        return false;
+    }
+}
+
+function stopMicCapture() {
+    if (micAudioProcessor) {
+        try { micAudioProcessor.disconnect(); } catch (_) {}
+        micAudioProcessor = null;
+    }
+    if (micAudioContextInstance) {
+        try { micAudioContextInstance.close(); } catch (_) {}
+        micAudioContextInstance = null;
+    }
+    if (micMediaStream) {
+        try { micMediaStream.getTracks().forEach(track => track.stop()); } catch (_) {}
+        micMediaStream = null;
+    }
+    console.log('Live microphone capture stopped (Speaker Only mode)');
+}
+
 function setupLinuxMicProcessing(micStream) {
-    // Setup microphone audio processing for Linux
+    micMediaStream = micStream;
     const micAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    micAudioContextInstance = micAudioContext;
     const micSource = micAudioContext.createMediaStreamSource(micStream);
     const micProcessor = micAudioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
@@ -384,10 +305,12 @@ function setupLinuxMicProcessing(micStream) {
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
 
     micProcessor.onaudioprocess = async e => {
+        if ((preferencesCache?.audioMode || 'speaker_only') === 'speaker_only') {
+            return;
+        }
         const inputData = e.inputBuffer.getChannelData(0);
         audioBuffer.push(...inputData);
 
-        // Process audio in chunks
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
             const pcmData16 = convertFloat32ToInt16(chunk);
@@ -402,8 +325,6 @@ function setupLinuxMicProcessing(micStream) {
 
     micSource.connect(micProcessor);
     micProcessor.connect(micAudioContext.destination);
-
-    // Store processor reference for cleanup
     micAudioProcessor = micProcessor;
 }
 
@@ -559,10 +480,9 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
     );
 }
 
-const MANUAL_SCREENSHOT_PROMPT = `Analyze this screenshot for my Java / Spring / Backend technical interview:
-1. If it shows CODE FOR CODE REVIEW (or asks what is wrong / how to improve it): find all bugs, Spring/Hibernate/JPA traps, concurrency/thread-safety issues, performance problems, and bad practices. Explain each issue in its own short visual paragraph (2-3 simple spoken sentences: what the bug is, why it fails, and how to fix it) so I can read it out loud naturally.
-2. If it shows a "What will this code print/output?" puzzle: state the exact output in the first sentence, then explain why step by step in simple spoken English.
-3. If it shows a coding task / algorithm / SQL query to write: give 2 short spoken paragraphs explaining the approach, followed by the clean, working code.`;
+const MANUAL_SCREENSHOT_PROMPT = `Analyze the code or question on this screenshot for my Java / Backend interview:
+1. First, explain in 2 to 4 short, simple spoken paragraphs (B1/B2 English) what the problems/bugs are in this code (or how to solve the task) so I can say it out loud.
+2. Second, ALWAYS write the complete, fixed, working code below your explanation in a code block. Keep the code simple, clean, and straightforward without over-engineering or changing the original structure unnecessarily.`;
 
 async function captureManualScreenshot(imageQuality = null) {
     console.log('Manual screenshot triggered');
@@ -681,6 +601,20 @@ async function captureManualScreenshot(imageQuality = null) {
 
 // Expose functions to global scope for external access
 window.captureManualScreenshot = captureManualScreenshot;
+window.getLiveAudioMode = () => preferencesCache?.audioMode || 'speaker_only';
+window.setLiveAudioMode = async (mode) => {
+    if (!preferencesCache) {
+        await loadPreferencesCache();
+    }
+    preferencesCache.audioMode = mode;
+    await storage.updatePreference('audioMode', mode);
+    if (mode === 'speaker_only') {
+        stopMicCapture();
+    } else if ((mode === 'both' || mode === 'mic_only') && mediaStream) {
+        await startMicCapture();
+    }
+    return mode;
+};
 
 function stopCapture() {
     if (screenshotInterval) {

@@ -468,36 +468,26 @@ async function sendToGroq(transcription) {
     }
 }
 
-const SCREEN_ANALYSIS_SYSTEM_PROMPT = `You are a real-time interview teleprompter for a Java / Spring / Backend developer. The user will read your response out loud directly to the interviewer.
+const SCREEN_ANALYSIS_SYSTEM_PROMPT = `You are a real-time interview teleprompter for a Java / Spring / Backend developer. The user will read your explanation out loud and use your corrected code.
 
 CRITICAL LANGUAGE & STYLE RULES:
-- ALWAYS write in simple, natural, everyday spoken English (B1/B2 level). Never use fancy textbook words ("paradigm", "facilitate", "leverage", "utilize").
-- Break your response into short visual paragraphs (1 to 3 short sentences per paragraph) with an empty line between paragraphs so the user can scan and read it effortlessly.
-- Bold ONLY the key technical terms, annotations, method names, line numbers, or bug names so the eye catches them immediately.
-- Never use markdown headers (#), tables, or introductory filler ("Sure, here is the code review:"). Start immediately with the first point.
+- ALWAYS write your explanation in simple, natural, everyday spoken English (B1/B2 level). Never use fancy textbook words ("paradigm", "facilitate", "leverage", "utilize").
+- Break the explanation into 2 to 4 short visual paragraphs (1 to 2 short sentences per paragraph) with an empty line between paragraphs so the user can scan and read it effortlessly.
+- Bold ONLY the key technical terms, annotations, method names, or bug names.
+- Never use introductory filler ("Sure, here is the code review:"). Start immediately with the first point.
 
-HOW TO HANDLE WHAT IS ON THE SCREEN:
-1. IF THE SCREEN SHOWS CODE FOR CODE REVIEW (or has bugs / bad practices):
-   - Go through every important bug, architectural issue, or bad practice one by one, each in its own short paragraph.
-   - For each issue, clearly state **what the problem is** (mentioning the exact annotation, method, variable, or line), **why it causes a bug or bad behavior**, and **how to fix it** in simple spoken English.
-   - Check carefully for classic Java / Spring / SQL interview traps:
-     * **@Transactional** on a **private** method, self-invocation (**this.method()**), or catching exceptions without rethrowing.
-     * **N+1 query problem** or calling the database / external API inside a **for** loop instead of batching (e.g. **findAllById**).
-     * Thread-safety bugs: using a non-thread-safe **HashMap**, **ArrayList**, or **SimpleDateFormat** as a shared field inside a singleton **@Service** or **@Component** (suggest **ConcurrentHashMap** or thread-safe alternatives).
-     * Comparing **String** or boxed wrapper objects (**Integer**, **Long**) using **==** instead of **.equals()**.
-     * Calling **Optional.get()** without checking (throws **NoSuchElementException**; suggest **.orElseThrow()**) or possible **NullPointerException**.
-     * Using **@Autowired** field injection instead of **final** fields with **constructor injection**.
-     * Overriding **equals()** without **hashCode()**, or using mutable objects as **HashMap** keys.
-     * Unclosed resources (**Connection**, **InputStream**, **ResultSet**) without **try-with-resources**.
-     * Removing elements from a collection inside a **for-each** loop (**ConcurrentModificationException**).
-     * Swallowing exceptions with an empty **catch** block or logging without proper handling.
-   - Do NOT dump a full rewritten class when doing a Code Review unless the screen explicitly asks to write code from scratch.
+MANDATORY TWO-PART OUTPUT STRUCTURE FOR CODE ON SCREEN:
+Part 1 — Spoken Explanation (What is wrong & why):
+- Go through the bugs, logical errors, or Spring/Java/SQL pitfalls one by one in short paragraphs.
+- For each issue, state **what the problem is**, **why it breaks or is bad practice**, and **how we fix it** in simple spoken English.
+- Check for classic Java/Spring issues: loop condition bugs, **Scanner**/**Resource** leaks, comparing **String** with **==** instead of **.equals()**, **NumberFormatException** / **NullPointerException** risks, **@Transactional** on **private** methods, **N+1** queries in loops, non-thread-safe **HashMap** in singletons, **Optional.get()** without check, or **@Autowired** field injection.
 
-2. IF THE SCREEN SHOWS A "WHAT WILL THIS CODE PRINT / OUTPUT?" PUZZLE:
-   - State the exact output in the very first sentence, then explain why step by step in 2 to 3 short spoken paragraphs.
-
-3. IF THE SCREEN SHOWS A CODING TASK / ALGORITHM / SQL QUERY TO IMPLEMENT:
-   - First give 2 short spoken paragraphs explaining the idea and time/space complexity, then provide the clean, working Java or SQL code block.`;
+Part 2 — Complete, Fixed, Working Code (ALWAYS REQUIRED):
+- Immediately after your spoken explanation, ALWAYS provide the **complete, corrected, ready-to-run code** inside a fenced code block (e.g. \`\`\`java ... \`\`\` or \`\`\`sql ... \`\`\`).
+- KEEP THE CODE SIMPLE AND STRAIGHTFORWARD:
+  * Write clean, natural, easy-to-understand code without over-engineering or fancy tricks.
+  * Keep the original class names, method names, and variable names from the screenshot so it is a direct, working fix of the user's code.
+  * Make sure the code compiles and works 100% correctly.`;
 
 async function sendImageToGroq(base64Data, prompt) {
     const groqApiKey = getGroqApiKey();
@@ -566,8 +556,8 @@ async function sendImageToGroq(base64Data, prompt) {
                         },
                     ],
                     stream: true,
-                    temperature: 0.4,
-                    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                    temperature: 0.3,
+                    max_completion_tokens: 2048,
                     ...getGroqReasoningOptions(model, config.disableGroqThinking),
                 }),
             });

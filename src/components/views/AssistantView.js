@@ -248,6 +248,36 @@ export class AssistantView extends LitElement {
             color: var(--text-muted);
         }
 
+        .audio-mode-btn {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: var(--font-size-xs);
+            font-family: var(--font-mono);
+            white-space: nowrap;
+            padding: var(--space-xs) var(--space-md);
+            border-radius: 100px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .audio-mode-btn:hover {
+            border-color: var(--accent);
+            color: var(--text-primary);
+            background: var(--bg-surface);
+        }
+
+        .audio-mode-btn.both-active {
+            border-color: #10B981;
+            color: #10B981;
+            background: rgba(16, 185, 129, 0.1);
+        }
+
         .analyze-btn {
             position: relative;
             background: var(--bg-elevated);
@@ -307,6 +337,7 @@ export class AssistantView extends LitElement {
         onSendText: { type: Function },
         shouldAnimateResponse: { type: Boolean },
         isAnalyzing: { type: Boolean, state: true },
+        audioMode: { type: String, state: true },
     };
 
     constructor() {
@@ -316,6 +347,7 @@ export class AssistantView extends LitElement {
         this.selectedProfile = 'interview';
         this.onSendText = () => {};
         this.isAnalyzing = false;
+        this.audioMode = 'speaker_only';
         this._animFrame = null;
     }
 
@@ -426,6 +458,16 @@ export class AssistantView extends LitElement {
 
     connectedCallback() {
         super.connectedCallback();
+        if (window.getLiveAudioMode) {
+            this.audioMode = window.getLiveAudioMode();
+        }
+        if (window.cheatingDaddy?.storage?.getPreferences) {
+            window.cheatingDaddy.storage.getPreferences().then(prefs => {
+                if (prefs && prefs.audioMode) {
+                    this.audioMode = prefs.audioMode;
+                }
+            }).catch(() => {});
+        }
 
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
@@ -468,6 +510,14 @@ export class AssistantView extends LitElement {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             this.handleSendText();
+        }
+    }
+
+    async handleToggleAudioMode() {
+        const nextMode = this.audioMode === 'both' ? 'speaker_only' : 'both';
+        this.audioMode = nextMode;
+        if (window.setLiveAudioMode) {
+            await window.setLiveAudioMode(nextMode);
         }
     }
 
@@ -699,6 +749,13 @@ export class AssistantView extends LitElement {
                         @keydown=${this.handleTextKeydown}
                     />
                 </div>
+                <button
+                    class="audio-mode-btn ${this.audioMode === 'both' ? 'both-active' : ''}"
+                    @click=${this.handleToggleAudioMode}
+                    title="${this.audioMode === 'both' ? 'Сейчас: Динамик + Микрофон (нажмите, чтобы оставить только Динамик)' : 'Сейчас: Только Динамик, микрофон выключен (нажмите, чтобы включить Динамик + Микрофон)'}"
+                >
+                    <span>${this.audioMode === 'both' ? '🔊+🎤 Оба' : '🔊 Динамик'}</span>
+                </button>
                 <button class="analyze-btn ${this.isAnalyzing ? 'analyzing' : ''}" @click=${this.handleScreenAnswer}>
                     <canvas class="analyze-canvas"></canvas>
                     <span class="analyze-btn-content">

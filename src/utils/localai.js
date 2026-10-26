@@ -784,6 +784,20 @@ async function initializeLocalSession(model, whisperModel, profile, customPrompt
 
 function processLocalAudio(monoChunk24k, channel = 'speaker') {
     if (!isLocalActive) return;
+    const prefs = getPreferences ? getPreferences() : {};
+    const audioMode = prefs.audioMode || 'speaker_only';
+    if (channel === 'mic' && audioMode === 'speaker_only') {
+        if (channelStates.mic?.isSpeaking) {
+            channelStates.mic = createChannelState();
+        }
+        return;
+    }
+    if (channel === 'speaker' && audioMode === 'mic_only') {
+        if (channelStates.speaker?.isSpeaking) {
+            channelStates.speaker = createChannelState();
+        }
+        return;
+    }
     const state = channelStates[channel] || channelStates.speaker;
 
     const pcm16k = resample24kTo16k(monoChunk24k, state);
