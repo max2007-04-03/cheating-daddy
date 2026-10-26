@@ -20,6 +20,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         frame: false,
         transparent: true,
         hasShadow: false,
+        skipTaskbar: true,
         alwaysOnTop: process.platform === 'win32',
         webPreferences: {
             nodeIntegration: true,
