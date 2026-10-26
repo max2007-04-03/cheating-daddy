@@ -216,26 +216,74 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
 
     try {
         if (isMacOS) {
-            // On macOS, use SystemAudioDump for audio and getDisplayMedia for screen
             console.log('Starting macOS capture with SystemAudioDump...');
-
-            // Start macOS audio capture
             const audioResult = await ipcRenderer.invoke('start-macos-audio');
             if (!audioResult.success) {
                 throw new Error('Failed to start macOS audio capture: ' + audioResult.error);
             }
 
-            // Get screen capture for screenshots
             mediaStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
                     frameRate: 5,
                     width: { ideal: 1920 },
                     height: { ideal: 1080 },
                 },
-                audio: false, // Don't use browser audio on macOS
+                audio: false,
             });
 
-            console.log('macOS screen capture started - audio handled by SystemAudioDump');
+            if (audioMode === 'mic_only' || audioMode === 'both') {
+                await startMicCapture();
+            }
+        } else if (isLinux) {
+            try {
+                mediaStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        frameRate: 5,
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                    },
+                    audio: {
+                        sampleRate: SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                    },
+                });
+                setupLinuxSystemAudioProcessing();
+            } catch (systemAudioError) {
+                mediaStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        frameRate: 5,
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                    },
+                    audio: false,
+                });
+            }
+
+            if (audioMode === 'mic_only' || audioMode === 'both') {
+                await startMicCapture();
+            }
+        } else {
+            // Windows - use display media with loopback for system audio
+            mediaStream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    frameRate: 5,
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
+                },
+                audio: {
+                    sampleRate: SAMPLE_RATE,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            });
+
+            console.log('Windows capture started with loopback audio');
+            setupWindowsLoopbackProcessing();
 
             if (audioMode === 'mic_only' || audioMode === 'both') {
                 await startMicCapture();
@@ -248,8 +296,24 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             videoTrack: mediaStream.getVideoTracks()[0]?.getSettings(),
         });
 
-        // Manual mode only - screenshots captured on demand via shortcut
-        console.log('Manual mode enabled - screenshots will be captured on demand only');
+        // Pre-warm hiddenVideo and offscreenCanvas immediately so Analyze Screen has 0ms init delay
+        if (mediaStream && mediaStream.getVideoTracks().length > 0 && !hiddenVideo) {
+            hiddenVideo = document.createElement('video');
+            hiddenVideo.srcObject = mediaStream;
+            hiddenVideo.muted = true;
+            hiddenVideo.playsInline = true;
+            hiddenVideo.play().catch(e => console.warn('Video pre-warm play warning:', e));
+            hiddenVideo.onloadedmetadata = () => {
+                if (!offscreenCanvas) {
+                    offscreenCanvas = document.createElement('canvas');
+                    offscreenCanvas.width = hiddenVideo.videoWidth || 1440;
+                    offscreenCanvas.height = hiddenVideo.videoHeight || 810;
+                    offscreenContext = offscreenCanvas.getContext('2d');
+                }
+            };
+        }
+
+        console.log('Manual mode enabled - screenshots pre-warmed and ready on demand');
     } catch (err) {
         console.error('Error starting capture:', err);
         cheatingDaddy.setStatus('error');
