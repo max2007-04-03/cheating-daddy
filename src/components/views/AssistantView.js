@@ -342,6 +342,7 @@ export class AssistantView extends LitElement {
         shouldAnimateResponse: { type: Boolean },
         isAnalyzing: { type: Boolean, state: true },
         audioMode: { type: String, state: true },
+        langMode: { type: String, state: true },
     };
 
     constructor() {
@@ -352,6 +353,7 @@ export class AssistantView extends LitElement {
         this.onSendText = () => {};
         this.isAnalyzing = false;
         this.audioMode = 'speaker_only';
+        this.langMode = 'auto';
         this._animFrame = null;
     }
 
@@ -470,6 +472,9 @@ export class AssistantView extends LitElement {
                 if (prefs && prefs.audioMode) {
                     this.audioMode = prefs.audioMode;
                 }
+                if (prefs && prefs.selectedLanguage) {
+                    this.langMode = prefs.selectedLanguage;
+                }
             }).catch(() => {});
         }
 
@@ -514,6 +519,16 @@ export class AssistantView extends LitElement {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             this.handleSendText();
+        }
+    }
+
+    async handleToggleLanguageMode() {
+        const order = ['auto', 'en-US', 'uk-UA'];
+        const idx = order.indexOf(this.langMode);
+        const nextLang = order[(idx + 1) % order.length];
+        this.langMode = nextLang;
+        if (window.setLiveLanguageMode) {
+            await window.setLiveLanguageMode(nextLang);
         }
     }
 
@@ -753,6 +768,13 @@ export class AssistantView extends LitElement {
                         @keydown=${this.handleTextKeydown}
                     />
                 </div>
+                <button
+                    class="audio-mode-btn ${this.langMode === 'uk-UA' ? 'both-active' : ''}"
+                    @click=${this.handleToggleLanguageMode}
+                    title="Язык распознавания: Авто (EN+UA) / Только EN / Только UA"
+                >
+                    <span>${this.langMode === 'uk-UA' ? '🇺🇦 UA' : this.langMode === 'en-US' ? '🇬🇧 EN' : '🌐 EN+UA'}</span>
+                </button>
                 <button
                     class="audio-mode-btn ${this.audioMode === 'both' ? 'both-active' : ''}"
                     @click=${this.handleToggleAudioMode}

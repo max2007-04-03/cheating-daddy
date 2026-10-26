@@ -665,6 +665,15 @@ async function captureManualScreenshot(imageQuality = null) {
 
 // Expose functions to global scope for external access
 window.captureManualScreenshot = captureManualScreenshot;
+window.getLiveLanguageMode = () => preferencesCache?.selectedLanguage || 'auto';
+window.setLiveLanguageMode = async (lang) => {
+    if (!preferencesCache) {
+        await loadPreferencesCache();
+    }
+    preferencesCache.selectedLanguage = lang;
+    await storage.updatePreference('selectedLanguage', lang);
+    return lang;
+};
 window.getLiveAudioMode = () => preferencesCache?.audioMode || 'speaker_only';
 window.setLiveAudioMode = async (mode) => {
     if (!preferencesCache) {

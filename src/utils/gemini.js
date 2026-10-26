@@ -313,9 +313,14 @@ async function sendToGroq(transcription) {
     const cleanTranscript = transcription.trim();
     const isRecentFollowUp = lastGroqTranscriptionText && (now - lastGroqTranscriptionTime < 15000);
 
+    const hasCyrillic = /[а-яіїєґА-ЯІЇЄҐ]/.test(cleanTranscript);
+    const langInstruction = hasCyrillic
+        ? 'Answer in natural spoken UKRAINIAN (живою українською мовою) with full technical depth (exact internal structures, numbers, methods, Big-O).'
+        : 'Answer in simple spoken B1/B2 ENGLISH with full technical depth (exact internal structures, numbers, methods, Big-O).';
+
     const userPromptContent = isRecentFollowUp
-        ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Decode any phonetic speech-to-text errors. Check how the Latest segment relates to the Previous segment:\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
-        : `Decode any phonetic speech-to-text errors in this transcription and answer the intended Java / Backend interview question completely: "${cleanTranscript}"`;
+        ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Decode any phonetic speech-to-text errors. ${langInstruction}\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
+        : `Decode any phonetic speech-to-text errors in this transcription and answer the intended Java / Backend interview question completely. ${langInstruction}\nQuestion: "${cleanTranscript}"`;
 
     lastGroqTranscriptionText = cleanTranscript;
     lastGroqTranscriptionTime = now;

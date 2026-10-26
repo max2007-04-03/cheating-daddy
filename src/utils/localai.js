@@ -268,7 +268,7 @@ function createWavBuffer(pcm16Buffer) {
 }
 
 const WHISPER_INTERVIEW_PROMPT =
-    'Java Developer technical interview. Terms: OOP, Object-Oriented Programming, SOLID, encapsulation, inheritance, polymorphism, abstraction, JVM, JDK, JRE, bytecode, JIT compiler, Garbage Collector, Heap, Stack, Metaspace, OutOfMemoryError, StackOverflowError, equals, hashCode, String Pool, StringBuilder, immutable, ArrayList, LinkedList, HashMap, ConcurrentHashMap, TreeMap, Comparable, Comparator, Generics, PECS, Stream API, Optional, Runnable, Callable, volatile, synchronized, Deadlock, Spring Boot, IoC, Dependency Injection, Bean, Hibernate, JPA, N+1, SQL, JOIN, ACID, B-Tree index, JUnit, Mockito, Maven, Docker.';
+    'Java Developer technical interview / Технічна співбесіда Java розробника. Terms: OOP, SOLID, encapsulation, inheritance, polymorphism, abstraction, JVM, JDK, JRE, Garbage Collector, Heap, Stack, Metaspace, OutOfMemoryError, equals, hashCode, String Pool, StringBuilder, immutable, ArrayList, LinkedList, HashMap, ConcurrentHashMap, TreeMap, Stream API, Optional, Runnable, Callable, volatile, synchronized, Deadlock, Spring Boot, IoC, Dependency Injection, Bean lifecycle, @Transactional, Hibernate, JPA, N+1, SQL, JOIN, ACID, JUnit, Mockito, Maven, Docker. Українською: життєвий цикл біна, інкапсуляція, поліморфізм, наслідування, абстракція, потоки, колекції, транзакції, індекси, різниця між.';
 
 function isWhisperHallucination(text) {
     if (!text) return true;
@@ -280,7 +280,9 @@ function isWhisperHallucination(text) {
         'uhhuh', 'mmhmm', 'right', 'sure', 'alright', 'all right', 'hello', 'hi',
         'one second', 'one moment', 'wait a second', 'let me see', 'i dont know',
         'is my name', 'thank you very much', 'thanks', 'good', 'great', 'nice',
-        'can you hear me', 'yes i can hear you'
+        'can you hear me', 'yes i can hear you',
+        'так', 'ні', 'добре', 'окей', 'алло', 'дякую', 'угу', 'ага', 'зрозумів', 'зрозуміло',
+        'секунду', 'зараз', 'привіт', 'добрий день', 'чути мене', 'так чути', 'да', 'нет', 'хорошо', 'спасибо'
     ];
     if (ignoredPhrases.includes(cleaned) || cleaned.length < 4) {
         return true;
@@ -300,8 +302,14 @@ async function transcribeWithGroq(pcm16kBuffer) {
 
     const wavBuffer = createWavBuffer(pcm16kBuffer);
     const prefs = getPreferences ? getPreferences() : {};
-    const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
-    const langCode = selectedLang.startsWith('ru') ? 'ru' : selectedLang.startsWith('uk') ? 'uk' : 'en';
+    const selectedLang = (prefs.selectedLanguage || 'auto').toLowerCase();
+    const langCode = selectedLang.startsWith('uk')
+        ? 'uk'
+        : selectedLang.startsWith('ru')
+        ? 'ru'
+        : selectedLang.startsWith('en')
+        ? 'en'
+        : null; // 'auto' -> native Whisper bilingual EN + UA auto-detection
 
     const whisperModels = ['whisper-large-v3', 'whisper-large-v3-turbo'];
     let lastError = null;
@@ -313,7 +321,9 @@ async function transcribeWithGroq(pcm16kBuffer) {
             formData.append('model', modelName);
             formData.append('response_format', 'json');
             formData.append('temperature', '0.0');
-            formData.append('language', langCode);
+            if (langCode) {
+                formData.append('language', langCode);
+            }
             formData.append('prompt', WHISPER_INTERVIEW_PROMPT);
 
             const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
