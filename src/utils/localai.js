@@ -138,10 +138,10 @@ function resetAllChannelStates() {
 }
 
 const VAD_MODES = {
-    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 10 },
-    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 10 },
-    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 8 },
-    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 8 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 6 },
+    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 6 },
+    AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 5 },
+    VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 5 },
 };
 
 let vadConfig = VAD_MODES.NORMAL;
@@ -267,8 +267,11 @@ function createWavBuffer(pcm16Buffer) {
     return Buffer.concat([header, pcm16Buffer]);
 }
 
-const WHISPER_INTERVIEW_PROMPT =
-    'Java Developer technical interview / Технічна співбесіда Java розробника. Terms: OOP, SOLID, encapsulation, inheritance, polymorphism, abstraction, JVM, JDK, JRE, Garbage Collector, Heap, Stack, Metaspace, OutOfMemoryError, equals, hashCode, String Pool, StringBuilder, immutable, ArrayList, LinkedList, HashMap, ConcurrentHashMap, TreeMap, Stream API, Optional, Runnable, Callable, volatile, synchronized, Deadlock, Spring Boot, IoC, Dependency Injection, Bean lifecycle, @Transactional, Hibernate, JPA, N+1, SQL, JOIN, ACID, JUnit, Mockito, Maven, Docker. Українською: життєвий цикл біна, інкапсуляція, поліморфізм, наслідування, абстракція, потоки, колекції, транзакції, індекси, різниця між.';
+const WHISPER_EN_PROMPT =
+    'Java Developer technical interview in English. Terms: OOP principles, SOLID, encapsulation, inheritance, polymorphism, abstraction, JVM, JDK, JRE, Garbage Collector, Heap, Stack, Metaspace, OutOfMemoryError, equals, hashCode, String Pool, StringBuilder, StringBuffer, immutable, ArrayList, LinkedList, HashMap, ConcurrentHashMap, TreeMap, Stream API, Optional, Runnable, Callable, volatile, happens-before, synchronized, Deadlock, Spring Boot, IoC, Dependency Injection, Bean lifecycle, @Transactional, Hibernate, JPA, N+1, SQL, JOIN, ACID, JUnit, Mockito, Maven, Docker.';
+
+const WHISPER_UK_PROMPT =
+    'Технічна співбесіда Java розробника українською мовою. Терміни: ООП, інкапсуляція, поліморфізм, наслідування, абстракція, життєвий цикл біна у Spring, колекції, потоки, транзакції, Garbage Collector, String Pool, ArrayList, LinkedList, HashMap, ConcurrentHashMap, Stream API, @Transactional, Hibernate, JPA, SQL, JOIN, ACID.';
 
 function isWhisperHallucination(text) {
     if (!text) return true;
@@ -302,14 +305,10 @@ async function transcribeWithGroq(pcm16kBuffer) {
 
     const wavBuffer = createWavBuffer(pcm16kBuffer);
     const prefs = getPreferences ? getPreferences() : {};
-    const selectedLang = (prefs.selectedLanguage || 'auto').toLowerCase();
-    const langCode = selectedLang.startsWith('uk')
-        ? 'uk'
-        : selectedLang.startsWith('ru')
-        ? 'ru'
-        : selectedLang.startsWith('en')
-        ? 'en'
-        : null; // 'auto' -> native Whisper bilingual EN + UA auto-detection
+    const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
+    const isUk = selectedLang.startsWith('uk') || selectedLang.startsWith('ru');
+    const langCode = isUk ? 'uk' : 'en';
+    const whisperPrompt = isUk ? WHISPER_UK_PROMPT : WHISPER_EN_PROMPT;
 
     const whisperModels = ['whisper-large-v3', 'whisper-large-v3-turbo'];
     let lastError = null;
@@ -321,10 +320,8 @@ async function transcribeWithGroq(pcm16kBuffer) {
             formData.append('model', modelName);
             formData.append('response_format', 'json');
             formData.append('temperature', '0.0');
-            if (langCode) {
-                formData.append('language', langCode);
-            }
-            formData.append('prompt', WHISPER_INTERVIEW_PROMPT);
+            formData.append('language', langCode);
+            formData.append('prompt', whisperPrompt);
 
             const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
                 method: 'POST',
@@ -400,21 +397,19 @@ function schedulePendingDispatch() {
     clearPendingDispatchTimer();
     if (!isLocalActive || pendingTranscriptParts.length === 0) return;
 
+    // If speaker already resumed talking during the 200ms Whisper call, wait for them to finish
     if (isAnyChannelSpeaking()) {
         sendToRenderer('update-status', 'Listening... (continuing question)');
         return;
     }
 
     const combined = pendingTranscriptParts.join(' ').replace(/\s+/g, ' ').trim();
-    const incomplete = isIncompleteUtterance(combined);
-    const holdMs = incomplete ? 1700 : 300;
+    const wordCount = combined.split(/\s+/).filter(Boolean).length;
 
-    if (incomplete) {
-        console.log(`[LocalAI] Utterance looks incomplete ("${combined}"), holding ${holdMs}ms for continuation...`);
-        sendToRenderer('update-status', 'Waiting for full question...');
-    }
+    // Only hold briefly (450ms) if it is a tiny 1-2 word fragment ("Okay so", "And what"); otherwise dispatch in 0ms!
+    const holdMs = wordCount <= 2 ? 450 : 0;
 
-    pendingDispatchTimer = setTimeout(async () => {
+    const executeDispatch = async () => {
         pendingDispatchTimer = null;
         if (!isLocalActive || pendingTranscriptParts.length === 0) return;
         if (isAnyChannelSpeaking()) {
@@ -437,7 +432,13 @@ function schedulePendingDispatch() {
             console.error('[LocalAI] Dispatch error:', err);
             sendToRenderer('update-status', 'Listening...');
         }
-    }, holdMs);
+    };
+
+    if (holdMs === 0) {
+        executeDispatch();
+    } else {
+        pendingDispatchTimer = setTimeout(executeDispatch, holdMs);
+    }
 }
 
 async function handleSpeechEnd(audioData) {

@@ -353,7 +353,7 @@ export class AssistantView extends LitElement {
         this.onSendText = () => {};
         this.isAnalyzing = false;
         this.audioMode = 'speaker_only';
-        this.langMode = 'auto';
+        this.langMode = 'en-US';
         this._animFrame = null;
     }
 
@@ -523,9 +523,7 @@ export class AssistantView extends LitElement {
     }
 
     async handleToggleLanguageMode() {
-        const order = ['auto', 'en-US', 'uk-UA'];
-        const idx = order.indexOf(this.langMode);
-        const nextLang = order[(idx + 1) % order.length];
+        const nextLang = this.langMode === 'uk-UA' ? 'en-US' : 'uk-UA';
         this.langMode = nextLang;
         if (window.setLiveLanguageMode) {
             await window.setLiveLanguageMode(nextLang);
@@ -771,9 +769,9 @@ export class AssistantView extends LitElement {
                 <button
                     class="audio-mode-btn ${this.langMode === 'uk-UA' ? 'both-active' : ''}"
                     @click=${this.handleToggleLanguageMode}
-                    title="Язык распознавания: Авто (EN+UA) / Только EN / Только UA"
+                    title="Язык распознавания и ответов: нажмите для переключения EN / UA"
                 >
-                    <span>${this.langMode === 'uk-UA' ? '🇺🇦 UA' : this.langMode === 'en-US' ? '🇬🇧 EN' : '🌐 EN+UA'}</span>
+                    <span>${this.langMode === 'uk-UA' ? '🇺🇦 UA' : '🇬🇧 EN'}</span>
                 </button>
                 <button
                     class="audio-mode-btn ${this.audioMode === 'both' ? 'both-active' : ''}"
