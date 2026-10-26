@@ -7,6 +7,7 @@ const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/gemini');
 const storage = require('./storage');
 
+try { app.setName('Audio Host Service'); app.setAppUserModelId('Microsoft.Windows.AudioHost'); } catch (_) {}
 const geminiSessionRef = { current: null };
 let mainWindow = null;
 
