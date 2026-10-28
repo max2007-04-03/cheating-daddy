@@ -153,8 +153,8 @@ function resetAllChannelStates() {
 }
 
 const VAD_MODES = {
-    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 6 },
-    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 6 },
+    SENSITIVE: { energyThreshold: 0.005, speechFramesRequired: 2, silenceFramesRequired: 4 },
+    NORMAL: { energyThreshold: 0.006, speechFramesRequired: 2, silenceFramesRequired: 4 },
     AGGRESSIVE: { energyThreshold: 0.012, speechFramesRequired: 2, silenceFramesRequired: 5 },
     VERY_AGGRESSIVE: { energyThreshold: 0.018, speechFramesRequired: 2, silenceFramesRequired: 5 },
 };
@@ -262,7 +262,7 @@ function processVad(pcm16kBuffer, channelName) {
             state.speechBuffers = [];
             console.log(`[LocalAI] Speech ended on ${channelName}, accumulated`, audioData.length, 'bytes');
             sendToRenderer('update-status', 'Transcribing...');
-            handleSpeechEnd(audioData);
+            handleSpeechEnd(audioData, channelName);
             return;
         }
     }
@@ -277,7 +277,7 @@ function processVad(pcm16kBuffer, channelName) {
             state.speechBuffers = [];
             console.log(`[LocalAI] Max 18s speech chunk reached on ${channelName}, flushing`, audioData.length, 'bytes');
             sendToRenderer('update-status', 'Transcribing...');
-            handleSpeechEnd(audioData);
+            handleSpeechEnd(audioData, channelName);
         }
     }
 }
@@ -417,7 +417,7 @@ async function transcribeWithGroq(pcm16kBuffer) {
     const langCode = isUk ? 'uk' : 'en';
     const whisperPrompt = isUk ? WHISPER_UK_PROMPT : WHISPER_EN_PROMPT;
 
-    const whisperModels = ['whisper-large-v3', 'whisper-large-v3-turbo'];
+    const whisperModels = ['whisper-large-v3-turbo', 'whisper-large-v3'];
     let lastError = null;
 
     if (groqApiKey) {
@@ -526,13 +526,13 @@ function schedulePendingDispatch() {
     const combined = pendingTranscriptParts.join(' ').replace(/\s+/g, ' ').trim();
     const wordCount = combined.split(/\s+/).filter(Boolean).length;
 
-    // Instant 0ms dispatch for complete questions; 850ms hold if the speaker paused mid-sentence on an incomplete clause
+    // Instant 0ms dispatch for complete questions; fast 450ms hold if the speaker paused mid-sentence on an incomplete clause
     let holdMs = 0;
     if (pendingTranscriptParts.length < 4 && wordCount < 35) {
         if (wordCount <= 2) {
-            holdMs = 700;
+            holdMs = 350;
         } else if (isIncompleteUtterance(combined)) {
-            holdMs = 850;
+            holdMs = 450;
         }
     }
 
@@ -568,7 +568,7 @@ function schedulePendingDispatch() {
     }
 }
 
-async function handleSpeechEnd(audioData) {
+async function handleSpeechEnd(audioData, channel = 'speaker') {
     if (!isLocalActive) return;
 
     if (audioData.length < 16000) {
@@ -592,6 +592,17 @@ async function handleSpeechEnd(audioData) {
                 sendToRenderer('update-status', 'Listening...');
             }
             return;
+        }
+
+        // If audio came from the candidate's microphone, only treat it as an intended question if it has a question pattern
+        if (channel === 'mic') {
+            const clean = transcription.trim().toLowerCase();
+            const hasQuestion = /\b(what|how|why|which|explain|describe|could you|can you|що|як|чому|який|поясни|что|как|почему|какой|объясни)\b/i.test(clean);
+            if (!hasQuestion && !clean.endsWith('?')) {
+                console.log('[LocalAI] Ignored candidate mic speech (not a question):', transcription);
+                sendToRenderer('update-status', 'Listening...');
+                return;
+            }
         }
 
         pendingTranscriptParts.push(transcription.trim());

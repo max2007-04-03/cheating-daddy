@@ -384,6 +384,40 @@ async function callGeminiIpv4(promptText, base64Image = null, systemInstruction 
     throw lastErr || new Error('Gemini fallback failed');
 }
 
+const TECHNICAL_KEYWORD_REGEX = /\b(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|iterable|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|phantom|repeatable|uncommitted|committed|serializable|required|mandatory|nested|supports|rollback|hibernate|jpa|entity|entitygraph|jdbctemplate|n\+1|sql|join|fetch|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overriding|overload|overloading|dispatch|runtime|compile|signature|modifier|private|protected|public|package|extend|extends|implement|implements|exception|throwable|error|checked|unchecked|try|catch|finally|autocloseable|return|line|code|result|output|compile|maven|gradle|git|polymorphism|inheritance|encapsulation|abstraction)\b/i;
+
+const SMALLTALK_PHRASES = [
+    'hear me', 'see me', 'see my screen', 'audible', 'muted', 'unmute',
+    'how are you', 'how is it going', 'nice to meet you', 'good morning', 'good afternoon', 'good evening', 'hi there', 'hello everyone',
+    'thank you', 'thanks', 'got it', 'makes sense', 'sounds good', 'sound good', 'move on', 'we can proceed', 'lets proceed', "that's it", "that's all",
+    'wait a second', 'wait a minute', 'one moment', 'hold on', 'let me check', 'about yourself', 'introduce yourself', 'your resume', 'your cv',
+    'чути', 'видно екран', 'як справи', 'добрий день', 'доброго дня', 'привіт', 'вітаю', 'дякую', 'зрозумів', 'зрозуміло', 'поїхали далі', 'про себе',
+    'слышно', 'видно экран', 'как дела', 'добрый день', 'добрый вечер', 'привет', 'здравствуйте', 'спасибо', 'понял', 'понятно', 'поехали дальше', 'о себе'
+];
+
+function isNonTechnicalSmallTalk(text) {
+    if (!text) return true;
+    const clean = text.toLowerCase().replace(/[.,!?;:()'"\\-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const words = clean.split(' ').filter(Boolean);
+    if (words.length <= 2 && !TECHNICAL_KEYWORD_REGEX.test(clean)) {
+        return true;
+    }
+    const hasTechnicalWord = TECHNICAL_KEYWORD_REGEX.test(clean);
+    if (hasTechnicalWord) {
+        return false;
+    }
+    for (const phrase of SMALLTALK_PHRASES) {
+        if (clean.includes(phrase)) {
+            return true;
+        }
+    }
+    const hasQuestionPattern = /\b(what|how|why|which|when|where|difference|compare|explain|describe|define|що|як|чому|який|різниця|поясни|что|как|почему|какой|разница|объясни)\b/i.test(clean);
+    if (!hasQuestionPattern && !clean.endsWith('?')) {
+        return true;
+    }
+    return false;
+}
+
 async function sendToGroq(transcription) {
     const groqApiKey = getGroqApiKey();
     const geminiApiKey = getApiKey ? getApiKey() : '';
@@ -399,13 +433,8 @@ async function sendToGroq(transcription) {
 
     const cleanTranscript = transcription.trim();
 
-    // Filter out short filler sounds/reactions that are not questions and have no technical terms
-    const words = cleanTranscript.split(/\s+/).filter(Boolean);
-    const TECHNICAL_KEYWORD_REGEX = /\b(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|iterable|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|phantom|repeatable|uncommitted|committed|serializable|required|mandatory|nested|supports|rollback|hibernate|jpa|entity|entitygraph|jdbctemplate|n\+1|sql|join|fetch|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overriding|overload|overloading|dispatch|runtime|compile|signature|modifier|private|protected|public|package|extend|extends|implement|implements|exception|throwable|error|checked|unchecked|try|catch|finally|autocloseable|return|line|code|result|output|compile|maven|gradle|git)\b/i;
-    const QUESTION_REGEX = /\b(what|how|why|when|where|which|who|whom|whose|explain|describe|tell|compare|difference|define|name|list|can you|could you|do you|does|is there|are there|will it|would it|if we|if i|in case|що|як|чому|коли|де|який|яка|яке|які|розкажи|поясни|назви|різниця|чи можна|якщо|что|как|почему|когда|где|какой|какая|какие|расскажи|объясни|назови|разница|если)\b/i;
-
-    if (words.length <= 2 && !TECHNICAL_KEYWORD_REGEX.test(cleanTranscript) && !QUESTION_REGEX.test(cleanTranscript)) {
-        console.log('[Groq] Ignored non-technical short utterance/filler:', cleanTranscript);
+    if (isNonTechnicalSmallTalk(cleanTranscript)) {
+        console.log('[Groq] Dropped small-talk / non-technical phrase:', cleanTranscript);
         sendToRenderer('update-status', 'Listening...');
         return;
     }
@@ -465,9 +494,11 @@ async function sendToGroq(transcription) {
         ? 'CRITICAL RULE: Answer 100% in simple, natural spoken UKRAINIAN (простими словами живою українською мовою). Write 3 short paragraphs (4-5 short sentences, max 85 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.'
         : 'CRITICAL RULE: Answer 100% in VERY SIMPLE everyday spoken A2/B1 ENGLISH words (use simple verbs like "uses", "starts with", "gets full", "grows", "copies", "lets us"; NEVER use academic words like "invariants", "utilizes", "exposes", "upon"). Write 3 short paragraphs (4-5 short sentences, max 85 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.';
 
+    const guardRule = 'CRITICAL NON-TECHNICAL GUARD: If this utterance is NOT an actual technical interview question about Java, Spring, Databases, or CS (e.g. greetings, meeting logistics, small talk, personal chat, or the candidate talking), respond with EXACTLY "[NO_ANSWER]".';
+
     const userPromptContent = previousSegmentsText
-        ? `Recent interviewer speech context (last 45 seconds): "${previousSegmentsText}"\nLatest spoken segment (just now): "${cleanTranscript}"${screenContextBlock}\n\nINSTRUCTION: Silently decode any phonetic speech-to-text errors without mentioning them. ${langInstruction}\n1. Interviewers often speak in long sentences, pause to think, or change words mid-question. If the Latest segment is a continuation, follow-up, or modification of the Recent speech context (or refers to the Active Screen Code Context), combine them and answer the FULL intended question.\n2. If the Latest segment is a brand-new question on a different topic, ignore the older speech context and answer ONLY the Latest question.`
-        : `Silently decode any phonetic speech-to-text errors in this transcription (never mention the error) and answer the intended Java / Backend interview question completely.${screenContextBlock} ${langInstruction}\nQuestion: "${cleanTranscript}"`;
+        ? `Recent interviewer speech context (last 30 seconds): "${previousSegmentsText}"\nLatest spoken segment (just now): "${cleanTranscript}"${screenContextBlock}\n\n${guardRule}\n${langInstruction}\n1. Interviewers often speak in long sentences, pause to think, or change words mid-question. If the Latest segment is a continuation, follow-up, or modification of the Recent speech context (or refers to the Active Screen Code Context), combine them and answer the FULL intended question.\n2. If the Latest segment is a brand-new question on a different topic, ignore the older speech context and answer ONLY the Latest question.`
+        : `${guardRule}\n${langInstruction}${screenContextBlock}\nQuestion: "${cleanTranscript}"`;
 
     const historyMessages = [];
     for (const turn of recentInterviewTurns.slice(-3)) {
@@ -505,7 +536,7 @@ async function sendToGroq(transcription) {
                         ],
                         stream: true,
                         temperature: 0.4,
-                        max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                        max_completion_tokens: 384,
                         ...getGroqReasoningOptions(activeModel, config.disableGroqThinking),
                     }),
                 });
@@ -568,6 +599,11 @@ async function sendToGroq(transcription) {
                             if (token) {
                                 fullText += token;
                                 const displayText = stripThinkingTags(fullText);
+                                const trimmedDisp = displayText.trim();
+                                if (trimmedDisp.startsWith('[NO_ANSWER]') || '[NO_ANSWER]'.startsWith(trimmedDisp)) {
+                                    // Suppress non-technical guard token
+                                    continue;
+                                }
                                 if (displayText) {
                                     sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
                                     isFirst = false;
@@ -584,6 +620,11 @@ async function sendToGroq(transcription) {
             }
 
             cleanedResponse = stripThinkingTags(fullText);
+            if (cleanedResponse.includes('[NO_ANSWER]') || !cleanedResponse.trim()) {
+                console.log(`[Groq] Model returned [NO_ANSWER] for utterance: "${cleanTranscript}"`);
+                sendToRenderer('update-status', 'Listening...');
+                return;
+            }
             const modelKey = activeModel.split('/').pop();
             const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
             const inputChars = systemPromptChars + userPromptContent.length;
@@ -601,7 +642,13 @@ async function sendToGroq(transcription) {
                 currentSystemPrompt || 'You are a helpful Java interview assistant.'
             );
             if (geminiRes && geminiRes.text) {
-                cleanedResponse = stripThinkingTags(geminiRes.text);
+                const text = stripThinkingTags(geminiRes.text);
+                if (text.includes('[NO_ANSWER]') || !text.trim()) {
+                    console.log(`[Gemini Fallback] Gemini returned [NO_ANSWER] for: "${cleanTranscript}"`);
+                    sendToRenderer('update-status', 'Listening...');
+                    return;
+                }
+                cleanedResponse = text;
                 activeModel = geminiRes.model;
                 sendToRenderer('new-response', cleanedResponse);
             }
