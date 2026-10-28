@@ -433,9 +433,10 @@ async function sendToGroq(transcription) {
 
     const cleanTranscript = transcription.trim();
 
-    if (isNonTechnicalSmallTalk(cleanTranscript)) {
-        console.log('[Groq] Dropped small-talk / non-technical phrase:', cleanTranscript);
-        logTransportEvent('groq.text.ignored', { reason: 'small_talk', text: cleanTranscript });
+    // Filter out 1-word pure filler noise
+    const words = cleanTranscript.split(/\s+/).filter(Boolean);
+    if (words.length <= 1 && cleanTranscript.length < 4) {
+        console.log('[Groq] Ignored tiny filler noise:', cleanTranscript);
         sendToRenderer('update-status', 'Listening...');
         return;
     }
@@ -495,11 +496,18 @@ async function sendToGroq(transcription) {
         ? 'CRITICAL RULE: Answer 100% in simple, natural spoken UKRAINIAN (простими словами живою українською мовою). Write 3 short paragraphs (4-5 short sentences, max 85 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.'
         : 'CRITICAL RULE: Answer 100% in VERY SIMPLE everyday spoken A2/B1 ENGLISH words (use simple verbs like "uses", "starts with", "gets full", "grows", "copies", "lets us"; NEVER use academic words like "invariants", "utilizes", "exposes", "upon"). Write 3 short paragraphs (4-5 short sentences, max 85 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.';
 
-    const guardRule = 'CRITICAL NON-TECHNICAL GUARD: If this utterance is NOT an actual technical interview question about Java, Spring, Databases, or CS (e.g. greetings, meeting logistics, small talk, personal chat, or the candidate talking), respond with EXACTLY "[NO_ANSWER]".';
+    const liveRules = `LIVE INTERVIEW TELEPROMPTER RULES:
+1. AUDIO / MIC TEST: If the speaker is testing audio or microphone (e.g. "проверка", "тест", "test", "can you hear me", "раз два три", "алло", "слышно", "чути"):
+   Output: "**Audio is working!** I hear you clearly and I am ready for Java / Spring questions."
+2. CANDIDATE INTRODUCTION / EXPERIENCE: If the speaker asks to introduce yourself or talk about experience ("tell me about yourself", "your experience", "розкажи про себе", "расскажи о себе"):
+   Output a crisp 3-sentence candidate intro highlighting **Java 17**, **Spring Boot**, **PostgreSQL**, **REST APIs**, and **clean architecture**.
+3. TECHNICAL QUESTIONS:
+   ${langInstruction}
+4. CONTEXT RESOLUTION: If the Latest segment modifies or continues the recent speech context, combine them and answer the full question.`;
 
     const userPromptContent = previousSegmentsText
-        ? `Recent interviewer speech context (last 30 seconds): "${previousSegmentsText}"\nLatest spoken segment (just now): "${cleanTranscript}"${screenContextBlock}\n\n${guardRule}\n${langInstruction}\n1. Interviewers often speak in long sentences, pause to think, or change words mid-question. If the Latest segment is a continuation, follow-up, or modification of the Recent speech context (or refers to the Active Screen Code Context), combine them and answer the FULL intended question.\n2. If the Latest segment is a brand-new question on a different topic, ignore the older speech context and answer ONLY the Latest question.`
-        : `${guardRule}\n${langInstruction}${screenContextBlock}\nQuestion: "${cleanTranscript}"`;
+        ? `Recent interviewer speech context (last 30 seconds): "${previousSegmentsText}"\nLatest spoken segment (just now): "${cleanTranscript}"${screenContextBlock}\n\n${liveRules}`
+        : `${liveRules}${screenContextBlock}\nQuestion: "${cleanTranscript}"`;
 
     const historyMessages = [];
     for (const turn of recentInterviewTurns.slice(-3)) {
@@ -600,11 +608,7 @@ async function sendToGroq(transcription) {
                             if (token) {
                                 fullText += token;
                                 const displayText = stripThinkingTags(fullText);
-                                const trimmedDisp = displayText.trim();
-                                if (trimmedDisp.startsWith('[NO_ANSWER]') || '[NO_ANSWER]'.startsWith(trimmedDisp)) {
-                                    // Suppress non-technical guard token
-                                    continue;
-                                }
+
                                 if (displayText) {
                                     sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
                                     isFirst = false;
@@ -621,11 +625,7 @@ async function sendToGroq(transcription) {
             }
 
             cleanedResponse = stripThinkingTags(fullText);
-            if (cleanedResponse.includes('[NO_ANSWER]') || !cleanedResponse.trim()) {
-                console.log(`[Groq] Model returned [NO_ANSWER] for utterance: "${cleanTranscript}"`);
-                sendToRenderer('update-status', 'Listening...');
-                return;
-            }
+
             const modelKey = activeModel.split('/').pop();
             const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
             const inputChars = systemPromptChars + userPromptContent.length;
@@ -644,11 +644,7 @@ async function sendToGroq(transcription) {
             );
             if (geminiRes && geminiRes.text) {
                 const text = stripThinkingTags(geminiRes.text);
-                if (text.includes('[NO_ANSWER]') || !text.trim()) {
-                    console.log(`[Gemini Fallback] Gemini returned [NO_ANSWER] for: "${cleanTranscript}"`);
-                    sendToRenderer('update-status', 'Listening...');
-                    return;
-                }
+
                 cleanedResponse = text;
                 activeModel = geminiRes.model;
                 sendToRenderer('new-response', cleanedResponse);

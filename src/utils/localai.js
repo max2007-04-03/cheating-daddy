@@ -594,17 +594,7 @@ async function handleSpeechEnd(audioData, channel = 'speaker') {
             return;
         }
 
-        // If audio came from candidate mic, only pass if it looks like a question or contains technical terms
-        if (channel === 'mic') {
-            const clean = transcription.trim().toLowerCase();
-            const hasQuestion = /(?<!\p{L})(what|how|why|which|explain|describe|could you|can you|tell|що|як|чому|який|поясни|розкажи|что|как|почему|какой|объясни|расскажи)(?!\p{L})/iu.test(clean);
-            const isShortFiller = clean.split(/\s+/).filter(Boolean).length <= 2 && !clean.endsWith('?');
-            if (isShortFiller || (!hasQuestion && !clean.endsWith('?') && clean.length < 15)) {
-                console.log('[LocalAI] Ignored candidate mic chatter/filler:', transcription);
-                sendToRenderer('update-status', 'Listening...');
-                return;
-            }
-        }
+        // Both speaker and mic audio are welcomed and processed
 
         pendingTranscriptParts.push(transcription.trim());
         schedulePendingDispatch();
