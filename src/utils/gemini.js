@@ -384,7 +384,7 @@ async function callGeminiIpv4(promptText, base64Image = null, systemInstruction 
     throw lastErr || new Error('Gemini fallback failed');
 }
 
-const TECHNICAL_KEYWORD_REGEX = /\b(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|iterable|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|phantom|repeatable|uncommitted|committed|serializable|required|mandatory|nested|supports|rollback|hibernate|jpa|entity|entitygraph|jdbctemplate|n\+1|sql|join|fetch|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overriding|overload|overloading|dispatch|runtime|compile|signature|modifier|private|protected|public|package|extend|extends|implement|implements|exception|throwable|error|checked|unchecked|try|catch|finally|autocloseable|return|line|code|result|output|compile|maven|gradle|git|polymorphism|inheritance|encapsulation|abstraction)\b/i;
+const TECHNICAL_KEYWORD_REGEX = /(?<!\p{L})(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|iterable|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|phantom|repeatable|uncommitted|committed|serializable|required|mandatory|nested|supports|rollback|hibernate|jpa|entity|entitygraph|jdbctemplate|n\+1|sql|join|fetch|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overriding|overload|overloading|dispatch|runtime|compile|signature|modifier|private|protected|public|package|extend|extends|implement|implements|exception|throwable|error|checked|unchecked|try|catch|finally|autocloseable|return|line|code|result|output|compile|maven|gradle|git|polymorphism|inheritance|encapsulation|abstraction|ооп|солид|солід|жвм|ждк|гц|гарбидж|гарбідж|хіп|хип|стек|стэк|поток|тред|дедлок|волатайл|синхронайзд|атомик|атомік|аррейлист|линкедлист|лінкедліст|хешмап|тримап|сет|лист|мап|колекц|коллекц|очеред|черг|стрим|стрім|опшинал|опціонал|спринг|бут|иок|іок|ди|ді|бин|бін|скоуп|прокси|проксі|транзакц|пропагейшн|изоляц|ізоляц|роллбек|ролбек|хибернейт|гібернейт|джпа|энтити|ентіті|скл|скуль|джоин|джойн|индекс|індекс|асид|есід|постгрес|мускул|кафка|реббит|реббіт|докер|рест|апи|апі|контроллер|контролер|сервис|сервіс|репозитор|автовайред|тест|юнит|юніт|мокито|мокіто|еквалс|иквалс|хешкод|стринг|стрінг|билдер|білдер|буфер|иммутабельн|іммутабельн|интерфейс|інтерфейс|абстрактн|класс|клас|метод|оверрайд|оверлоад|диспатч|диспетчеризац|сигнатур|модификатор|модифікатор|приватн|протектид|протектід|паблик|паблік|эксепшн|ексепшн|исключен|виключен|ошибк|помилк|чекд|анчекд|трай|кетч|файналл|файналі|ретерн|ретюрн|код|строк|рядок|мавен|гит|гіт|полиморфизм|поліморфізм|наследован|спадкуван|инкапсуляц|інкапсуляц|абстракц)/iu;
 
 const SMALLTALK_PHRASES = [
     'hear me', 'see me', 'see my screen', 'audible', 'muted', 'unmute',
@@ -411,7 +411,7 @@ function isNonTechnicalSmallTalk(text) {
             return true;
         }
     }
-    const hasQuestionPattern = /\b(what|how|why|which|when|where|difference|compare|explain|describe|define|що|як|чому|який|різниця|поясни|что|как|почему|какой|разница|объясни)\b/i.test(clean);
+    const hasQuestionPattern = /(?<!\p{L})(what|how|why|which|when|where|difference|compare|explain|describe|define|could you|can you|tell|що|як|чому|який|різниця|поясни|розкажи|что|как|почему|какой|разница|объясни|расскажи)(?!\p{L})/iu.test(clean);
     if (!hasQuestionPattern && !clean.endsWith('?')) {
         return true;
     }
@@ -435,6 +435,7 @@ async function sendToGroq(transcription) {
 
     if (isNonTechnicalSmallTalk(cleanTranscript)) {
         console.log('[Groq] Dropped small-talk / non-technical phrase:', cleanTranscript);
+        logTransportEvent('groq.text.ignored', { reason: 'small_talk', text: cleanTranscript });
         sendToRenderer('update-status', 'Listening...');
         return;
     }
