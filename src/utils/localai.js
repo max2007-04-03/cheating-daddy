@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { getSystemPrompt } = require('./prompts');
 const { sendToRenderer, initializeNewSession, saveConversationTurn, sendToGroq, sendImageToGroq, hasGroqKey } = require('./gemini');
-const { getGroqApiKey, getPreferences } = require('../storage');
+const { getGroqApiKey, getApiKey, getPreferences } = require('../storage');
 const {
     ensureNativeBinary,
     ensureLlamaModel,
@@ -33,6 +33,7 @@ function createChannelState() {
         preRollBuffers: [],
         silenceFrameCount: 0,
         speechFrameCount: 0,
+        lastFrameTime: 0,
         resampleRemainder: Buffer.alloc(0),
     };
 }
@@ -53,7 +54,21 @@ function clearPendingDispatchTimer() {
 }
 
 function isAnyChannelSpeaking() {
-    return Boolean(channelStates.speaker?.isSpeaking || channelStates.mic?.isSpeaking);
+    const now = Date.now();
+    for (const key of ['speaker', 'mic']) {
+        const st = channelStates[key];
+        if (!st || !st.isSpeaking) continue;
+        // Auto-expire stuck isSpeaking if channel stopped receiving audio frames for > 1.2s (e.g. mic muted/switched off)
+        if (st.lastFrameTime && now - st.lastFrameTime > 1200) {
+            st.isSpeaking = false;
+            st.speechBuffers = [];
+            st.silenceFrameCount = 0;
+            st.speechFrameCount = 0;
+            continue;
+        }
+        return true;
+    }
+    return false;
 }
 
 const TRAILING_INCOMPLETE_WORDS = new Set([
@@ -67,7 +82,7 @@ const TRAILING_INCOMPLETE_WORDS = new Set([
     'is', 'are', 'am', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
     'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'can', 'could', 'may',
     'might', 'must', 'what', 'how', 'why', 'say', 'suppose', 'imagine', 'assume',
-    'consider', 'specifically', 'particularly', 'especially', 'called', 'named', 'using',
+    'consider', 'specifically', 'particularly', 'especially', 'called', 'named', 'using', 'initialized', 'changed', 'narrowing', 'calling', 'implementing', 'extending',
     // Ukrainian & Russian connectors, prepositions, pronouns, setup words
     'і', 'й', 'та', 'а', 'але', 'або', 'чи', 'якщо', 'коли', 'поки', 'тому', 'бо',
     'щоб', 'що', 'який', 'яка', 'яке', 'які', 'якого', 'яких', 'у', 'в', 'на', 'з',
@@ -199,6 +214,10 @@ function calculateRms(pcm16Buffer) {
 
 function processVad(pcm16kBuffer, channelName) {
     const state = channelStates[channelName] || channelStates.speaker;
+    state.lastFrameTime = Date.now();
+    // Clean up any stale speaking state on the other channel
+    isAnyChannelSpeaking();
+
     const rms = calculateRms(pcm16kBuffer);
     const isVoice = rms > vadConfig.energyThreshold;
     const frameCopy = Buffer.from(pcm16kBuffer);
@@ -230,8 +249,15 @@ function processVad(pcm16kBuffer, channelName) {
         state.silenceFrameCount += 1;
         state.speechFrameCount = 0;
 
-        if (state.isSpeaking && state.silenceFrameCount >= vadConfig.silenceFramesRequired) {
+        // Flush on normal silence (0.6s) OR on a brief breath (0.2s) if speaker has been talking > 12s continuously
+        const shouldFlushOnSilence =
+            state.isSpeaking &&
+            (state.silenceFrameCount >= vadConfig.silenceFramesRequired ||
+                (state.speechBuffers.length >= 120 && state.silenceFrameCount >= 2));
+
+        if (shouldFlushOnSilence) {
             state.isSpeaking = false;
+            state.silenceFrameCount = 0;
             const audioData = Buffer.concat(state.speechBuffers);
             state.speechBuffers = [];
             console.log(`[LocalAI] Speech ended on ${channelName}, accumulated`, audioData.length, 'bytes');
@@ -243,6 +269,16 @@ function processVad(pcm16kBuffer, channelName) {
 
     if (state.isSpeaking) {
         state.speechBuffers.push(frameCopy);
+        // Hard safety cap: if continuous audio exceeds 18 seconds (180 frames) without any pause, flush chunk immediately
+        if (state.speechBuffers.length >= 180) {
+            state.isSpeaking = false;
+            state.silenceFrameCount = 0;
+            const audioData = Buffer.concat(state.speechBuffers);
+            state.speechBuffers = [];
+            console.log(`[LocalAI] Max 18s speech chunk reached on ${channelName}, flushing`, audioData.length, 'bytes');
+            sendToRenderer('update-status', 'Transcribing...');
+            handleSpeechEnd(audioData);
+        }
     }
 }
 
@@ -268,10 +304,10 @@ function createWavBuffer(pcm16Buffer) {
 }
 
 const WHISPER_EN_PROMPT =
-    'Java Developer technical interview in English. Terms: OOP principles, SOLID, encapsulation, inheritance, polymorphism, abstraction, JVM, JDK, JRE, Garbage Collector, Heap, Stack, Metaspace, OutOfMemoryError, equals, hashCode, String Pool, StringBuilder, StringBuffer, immutable, ArrayList, LinkedList, HashMap, ConcurrentHashMap, TreeMap, Stream API, Optional, Runnable, Callable, volatile, happens-before, synchronized, Deadlock, Spring Boot, IoC, Dependency Injection, Bean lifecycle, @Transactional, Hibernate, JPA, N+1, SQL, JOIN, ACID, JUnit, Mockito, Maven, Docker.';
+    'Java Developer technical interview. Terms: OOP, encapsulation, inheritance, polymorphism, abstraction, method overloading, method overriding, method signature, dynamic method dispatch, reference type, runtime object, access modifiers, private, protected, public, Throwable, Error, Exception, RuntimeException, IOException, SQLException, ArithmeticException, checked vs unchecked exception, custom exception, try-catch-finally, try-with-resources, AutoCloseable, suppressed exceptions, Iterable, Collection hierarchy, List vs Set, Queue, Map, ArrayList, LinkedList, HashMap, TreeMap, ConcurrentHashMap, equals and hashCode, Stream API, intermediate and terminal operations, Spring Boot, IoC, Dependency Injection, Bean lifecycle, @Transactional, propagation, REQUIRED, REQUIRES_NEW, NESTED, SUPPORTS, NOT_SUPPORTED, MANDATORY, NEVER, isolation levels, READ_UNCOMMITTED, READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE, dirty read, non-repeatable read, phantom read, Spring Data JPA, Hibernate, N+1 problem, JOIN FETCH, @EntityGraph, JdbcTemplate.';
 
 const WHISPER_UK_PROMPT =
-    'Технічна співбесіда Java розробника українською мовою. Терміни: ООП, інкапсуляція, поліморфізм, наслідування, абстракція, життєвий цикл біна у Spring, колекції, потоки, транзакції, Garbage Collector, String Pool, ArrayList, LinkedList, HashMap, ConcurrentHashMap, Stream API, @Transactional, Hibernate, JPA, SQL, JOIN, ACID.';
+    'Технічна співбесіда Java розробника українською мовою. Терміни: ООП, інкапсуляція, поліморфізм, наслідування, абстракція, перевантаження та перевизначення методів, динамічна диспетчеризація, тип посилання, Throwable, Exception, RuntimeException, try-with-resources, AutoCloseable, ієрархія колекцій, Iterable, Collection, List, Set, Map, ArrayList, LinkedList, HashMap, Stream API, Spring Boot, @Transactional, рівні пропагації та ізоляції транзакцій, Hibernate, JPA, N+1, JOIN FETCH, @EntityGraph.';
 
 function isWhisperHallucination(text) {
     if (!text) return true;
@@ -280,14 +316,19 @@ function isWhisperHallucination(text) {
         'thank you', 'thanks for watching', 'you', 'subtitles by', 'bye',
         'thank you for watching', 'mbc', 'subscribe', 'silence', 'so',
         'yeah', 'yes', 'no', 'okay', 'ok', 'im sorry', 'i am sorry', 'sorry',
-        'uhhuh', 'mmhmm', 'right', 'sure', 'alright', 'all right', 'hello', 'hi',
+        'uhhuh', 'mmhmm', 'mmmmm', 'mmmm', 'hmm', 'boom', 'weeheehee', 'peace',
+        'right', 'sure', 'alright', 'all right', 'hello', 'hi',
         'one second', 'one moment', 'wait a second', 'let me see', 'i dont know',
         'is my name', 'thank you very much', 'thanks', 'good', 'great', 'nice',
-        'can you hear me', 'yes i can hear you',
+        'can you hear me', 'yes i can hear you', 'thats it', 'no worries',
+        'its cool', 'okay cool', 'i see okay cool', 'have a good week', 'hope to see you soon',
         'так', 'ні', 'добре', 'окей', 'алло', 'дякую', 'угу', 'ага', 'зрозумів', 'зрозуміло',
         'секунду', 'зараз', 'привіт', 'добрий день', 'чути мене', 'так чути', 'да', 'нет', 'хорошо', 'спасибо'
     ];
     if (ignoredPhrases.includes(cleaned) || cleaned.length < 4) {
+        return true;
+    }
+    if (cleaned.includes('amara.org') || cleaned.includes('amara org') || cleaned.includes('subtitles by')) {
         return true;
     }
     // Filter out non-English/non-Cyrillic script hallucinations on mumbles (e.g. Icelandic þ, ð, æ)
@@ -297,10 +338,76 @@ function isWhisperHallucination(text) {
     return false;
 }
 
+async function transcribeWithGeminiIpv4(wavBuffer, isUk) {
+    const apiKey = getApiKey ? getApiKey() : '';
+    if (!apiKey || !apiKey.trim()) {
+        throw new Error('No Gemini API key configured for audio fallback');
+    }
+    return new Promise((resolve, reject) => {
+        const https = require('https');
+        const prompt = isUk
+            ? 'Транскрибуй це аудіо з технічної співбесіди Java розробника точно українською мовою. Поверни ТІЛЬКИ текст без коментарів.'
+            : 'Transcribe this Java technical interview audio accurately in English. Output ONLY the exact spoken words without any commentary.';
+        const body = JSON.stringify({
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        { text: prompt },
+                        { inlineData: { mimeType: 'audio/wav', data: wavBuffer.toString('base64') } },
+                    ],
+                },
+            ],
+            generationConfig: { temperature: 0.0, maxOutputTokens: 512 },
+        });
+        const req = https.request(
+            {
+                hostname: 'generativelanguage.googleapis.com',
+                path: `/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey.trim()}`,
+                method: 'POST',
+                family: 4,
+                timeout: 12000,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+            },
+            res => {
+                let data = '';
+                res.on('data', chunk => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    if (res.statusCode < 200 || res.statusCode >= 300) {
+                        return reject(new Error(`Gemini Audio HTTP ${res.statusCode}: ${data.slice(0, 150)}`));
+                    }
+                    try {
+                        const parsed = JSON.parse(data);
+                        const outParts = parsed.candidates?.[0]?.content?.parts || [];
+                        const text = outParts
+                            .filter(p => !p.thought && typeof p.text === 'string')
+                            .map(p => p.text)
+                            .join('')
+                            .trim();
+                        resolve(text);
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            }
+        );
+        req.on('timeout', () => req.destroy(new Error('Gemini Audio IPv4 timeout')));
+        req.on('error', err => reject(err));
+        req.write(body);
+        req.end();
+    });
+}
+
 async function transcribeWithGroq(pcm16kBuffer) {
     const groqApiKey = getGroqApiKey();
-    if (!groqApiKey) {
-        throw new Error('No Groq API key configured');
+    const geminiApiKey = getApiKey ? getApiKey() : '';
+    if (!groqApiKey && !geminiApiKey) {
+        throw new Error('Neither Groq nor Gemini API key configured');
     }
 
     const wavBuffer = createWavBuffer(pcm16kBuffer);
@@ -313,40 +420,53 @@ async function transcribeWithGroq(pcm16kBuffer) {
     const whisperModels = ['whisper-large-v3', 'whisper-large-v3-turbo'];
     let lastError = null;
 
-    for (const modelName of whisperModels) {
-        try {
-            const formData = new FormData();
-            formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'speech.wav');
-            formData.append('model', modelName);
-            formData.append('response_format', 'json');
-            formData.append('temperature', '0.0');
-            formData.append('language', langCode);
-            formData.append('prompt', whisperPrompt);
+    if (groqApiKey) {
+        for (const modelName of whisperModels) {
+            try {
+                const formData = new FormData();
+                formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'speech.wav');
+                formData.append('model', modelName);
+                formData.append('response_format', 'json');
+                formData.append('temperature', '0.0');
+                formData.append('language', langCode);
+                formData.append('prompt', whisperPrompt);
 
-            const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${groqApiKey}`,
-                },
-                body: formData,
-            });
+                const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${groqApiKey}`,
+                    },
+                    body: formData,
+                });
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                lastError = new Error(`Groq Whisper (${modelName}) HTTP ${response.status}: ${errorText}`);
-                console.warn(lastError.message);
-                continue;
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    lastError = new Error(`Groq Whisper (${modelName}) HTTP ${response.status}: ${errorText}`);
+                    console.warn(lastError.message);
+                    continue;
+                }
+
+                const result = await response.json();
+                return result.text?.trim() || '';
+            } catch (err) {
+                lastError = err;
+                console.warn(`[LocalAI] Whisper model ${modelName} failed, trying fallback:`, err.message);
             }
-
-            const result = await response.json();
-            return result.text?.trim() || '';
-        } catch (err) {
-            lastError = err;
-            console.warn(`[LocalAI] Whisper model ${modelName} failed, trying fallback:`, err.message);
         }
     }
 
-    throw lastError || new Error('All Groq Whisper models failed');
+    if (geminiApiKey) {
+        try {
+            console.log('[LocalAI] Falling back to Gemini IPv4 audio transcription...');
+            const text = await transcribeWithGeminiIpv4(wavBuffer, isUk);
+            return text || '';
+        } catch (gemErr) {
+            lastError = gemErr;
+            console.warn('[LocalAI] Gemini audio fallback failed:', gemErr.message);
+        }
+    }
+
+    throw lastError || new Error('All Whisper and Gemini audio transcription models failed');
 }
 
 async function transcribeAudio(pcm16kBuffer) {
@@ -406,8 +526,15 @@ function schedulePendingDispatch() {
     const combined = pendingTranscriptParts.join(' ').replace(/\s+/g, ' ').trim();
     const wordCount = combined.split(/\s+/).filter(Boolean).length;
 
-    // Only hold briefly (450ms) if it is a tiny 1-2 word fragment ("Okay so", "And what"); otherwise dispatch in 0ms!
-    const holdMs = wordCount <= 2 ? 450 : 0;
+    // Instant 0ms dispatch for complete questions; 850ms hold if the speaker paused mid-sentence on an incomplete clause
+    let holdMs = 0;
+    if (pendingTranscriptParts.length < 4 && wordCount < 35) {
+        if (wordCount <= 2) {
+            holdMs = 700;
+        } else if (isIncompleteUtterance(combined)) {
+            holdMs = 850;
+        }
+    }
 
     const executeDispatch = async () => {
         pendingDispatchTimer = null;

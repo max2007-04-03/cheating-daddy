@@ -89,6 +89,9 @@ function initializeNewSession(profile = null, customPrompt = null) {
     screenAnalysisHistory = [];
     groqConversationHistory = [];
     recentInterviewTurns = [];
+    recentSpeechSegments = [];
+    lastGroqTranscriptionText = '';
+    lastGroqTranscriptionTime = 0;
     currentProfile = profile;
     currentCustomPrompt = customPrompt;
     try {
@@ -214,7 +217,8 @@ async function getStoredSetting(key, defaultValue) {
 // helper to check if groq has been configured
 function hasGroqKey() {
     const key = getGroqApiKey();
-    return key && key.trim() != '';
+    const geminiKey = getApiKey ? getApiKey() : '';
+    return Boolean((key && key.trim() !== '') || (geminiKey && geminiKey.trim() !== ''));
 }
 
 function sendFinalTranscriptionToGroq() {
@@ -281,14 +285,110 @@ function getGroqReasoningOptions(model, disableThinking) {
 
 let lastGroqTranscriptionText = '';
 let lastGroqTranscriptionTime = 0;
+let recentSpeechSegments = [];
 let activeGroqAbortController = null;
 let recentInterviewTurns = [];
 const groqModelCooldownUntil = new Map();
 
+function callGeminiIpv4Single(apiKey, modelName, promptText, base64Image, systemInstruction) {
+    return new Promise((resolve, reject) => {
+        const https = require('https');
+        const parts = [{ text: promptText }];
+        if (base64Image) {
+            parts.push({
+                inlineData: {
+                    mimeType: 'image/jpeg',
+                    data: base64Image,
+                },
+            });
+        }
+        const payload = {
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+                temperature: 0.35,
+                maxOutputTokens: 2048,
+            },
+        };
+        if (systemInstruction) {
+            payload.systemInstruction = {
+                parts: [{ text: systemInstruction }],
+            };
+        }
+        const body = JSON.stringify(payload);
+        const req = https.request(
+            {
+                hostname: 'generativelanguage.googleapis.com',
+                path: `/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+                method: 'POST',
+                family: 4, // Force IPv4 to avoid Windows IPv6 timeout
+                timeout: 18000,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+            },
+            res => {
+                let data = '';
+                res.on('data', chunk => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    if (res.statusCode < 200 || res.statusCode >= 300) {
+                        return reject(new Error(`Gemini HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+                    }
+                    try {
+                        const parsed = JSON.parse(data);
+                        const outParts = parsed.candidates?.[0]?.content?.parts || [];
+                        const text = outParts
+                            .filter(p => !p.thought && typeof p.text === 'string')
+                            .map(p => p.text)
+                            .join('')
+                            .trim();
+                        if (!text) {
+                            const fallbackText = outParts.map(p => p.text || '').join('').trim();
+                            return resolve(fallbackText);
+                        }
+                        resolve(text);
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            }
+        );
+        req.on('timeout', () => {
+            req.destroy(new Error('Gemini IPv4 request timeout'));
+        });
+        req.on('error', err => reject(err));
+        req.write(body);
+        req.end();
+    });
+}
+
+async function callGeminiIpv4(promptText, base64Image = null, systemInstruction = '') {
+    const apiKey = getApiKey ? getApiKey() : '';
+    if (!apiKey || !apiKey.trim()) {
+        throw new Error('No Gemini API key configured');
+    }
+    const models = ['gemini-3-flash-preview'];
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const modelName = models[attempt % models.length];
+        try {
+            const text = await callGeminiIpv4Single(apiKey.trim(), modelName, promptText, base64Image, systemInstruction);
+            if (text) return { text, model: modelName };
+        } catch (err) {
+            lastErr = err;
+            console.warn(`[Gemini IPv4] Attempt ${attempt + 1} (${modelName}) failed:`, err.message);
+        }
+    }
+    throw lastErr || new Error('Gemini fallback failed');
+}
+
 async function sendToGroq(transcription) {
     const groqApiKey = getGroqApiKey();
-    if (!groqApiKey) {
-        console.log('No Groq API key configured, skipping Groq response');
+    const geminiApiKey = getApiKey ? getApiKey() : '';
+    if (!groqApiKey && !geminiApiKey) {
+        console.log('Neither Groq nor Gemini API key configured, skipping response');
         return;
     }
 
@@ -297,10 +397,12 @@ async function sendToGroq(transcription) {
         return;
     }
 
+    const cleanTranscript = transcription.trim();
+
     // Filter out short filler sounds/reactions that are not questions and have no technical terms
     const words = cleanTranscript.split(/\s+/).filter(Boolean);
-    const TECHNICAL_KEYWORD_REGEX = /\b(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|rollback|hibernate|jpa|entity|n\+1|sql|join|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overload|extend|implement|maven|gradle|git)\b/i;
-    const QUESTION_REGEX = /\b(what|how|why|when|where|which|who|whom|whose|explain|describe|tell|compare|difference|define|name|list|can you|could you|do you|does|is there|are there|will it|would it|що|як|чому|коли|де|який|яка|яке|які|розкажи|поясни|назви|різниця|чи можна|что|как|почему|когда|где|какой|какая|какие|расскажи|объясни|назови|разница)\b/i;
+    const TECHNICAL_KEYWORD_REGEX = /\b(oop|solid|jvm|jdk|jre|gc|garbage|heap|stack|thread|deadlock|race|volatile|synchronized|atomic|arraylist|linkedlist|hashmap|concurrenthashmap|treemap|set|list|map|collection|iterable|queue|stream|optional|spring|boot|ioc|di|bean|scope|proxy|cglib|transaction|transactional|propagation|isolation|dirty|phantom|repeatable|uncommitted|committed|serializable|required|mandatory|nested|supports|rollback|hibernate|jpa|entity|entitygraph|jdbctemplate|n\+1|sql|join|fetch|index|acid|postgres|mysql|kafka|rabbit|docker|rest|http|api|controller|service|repository|autowired|inject|test|junit|mockito|equals|hashcode|string|builder|buffer|immutable|interface|abstract|class|method|override|overriding|overload|overloading|dispatch|runtime|compile|signature|modifier|private|protected|public|package|extend|extends|implement|implements|exception|throwable|error|checked|unchecked|try|catch|finally|autocloseable|return|line|code|result|output|compile|maven|gradle|git)\b/i;
+    const QUESTION_REGEX = /\b(what|how|why|when|where|which|who|whom|whose|explain|describe|tell|compare|difference|define|name|list|can you|could you|do you|does|is there|are there|will it|would it|if we|if i|in case|що|як|чому|коли|де|який|яка|яке|які|розкажи|поясни|назви|різниця|чи можна|якщо|что|как|почему|когда|где|какой|какая|какие|расскажи|объясни|назови|разница|если)\b/i;
 
     if (words.length <= 2 && !TECHNICAL_KEYWORD_REGEX.test(cleanTranscript) && !QUESTION_REGEX.test(cleanTranscript)) {
         console.log('[Groq] Ignored non-technical short utterance/filler:', cleanTranscript);
@@ -333,8 +435,28 @@ async function sendToGroq(transcription) {
     activeGroqAbortController = abortController;
 
     const now = Date.now();
-    const cleanTranscript = transcription.trim();
-    const isRecentFollowUp = lastGroqTranscriptionText && (now - lastGroqTranscriptionTime < 15000);
+    // Maintain a rolling 45-second window of spoken segments so long, rambling, or rephrased interviewer questions stay connected
+    recentSpeechSegments = recentSpeechSegments.filter(seg => now - seg.time < 45000);
+    const previousSegmentsText = recentSpeechSegments
+        .slice(-5)
+        .map(seg => seg.text)
+        .join(' ');
+    recentSpeechSegments.push({ text: cleanTranscript, time: now });
+    if (recentSpeechSegments.length > 6) {
+        recentSpeechSegments = recentSpeechSegments.slice(-6);
+    }
+
+    lastGroqTranscriptionText = cleanTranscript;
+    lastGroqTranscriptionTime = now;
+
+    // Include latest screen analysis if captured within the last 15 minutes so verbal questions about shared code ("In line 13...", "What if we change protected to public?") have the exact code context
+    const latestScreen =
+        screenAnalysisHistory.length > 0 && now - screenAnalysisHistory[screenAnalysisHistory.length - 1].timestamp < 15 * 60 * 1000
+            ? screenAnalysisHistory[screenAnalysisHistory.length - 1].response
+            : null;
+    const screenContextBlock = latestScreen
+        ? `\n\n[ACTIVE SCREEN / CODE CONTEXT (refer to this ONLY if the question asks about the code, classes, methods, or lines on screen)]:\n${latestScreen.slice(0, 1800)}\n`
+        : '';
 
     const prefs = getPreferences ? getPreferences() : {};
     const selectedLang = (prefs.selectedLanguage || 'en-US').toLowerCase();
@@ -343,144 +465,156 @@ async function sendToGroq(transcription) {
         ? 'CRITICAL RULE: Answer 100% in simple, natural spoken UKRAINIAN (простими словами живою українською мовою). Write 3 short paragraphs (4-5 short sentences, max 85 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.'
         : 'CRITICAL RULE: Answer 100% in VERY SIMPLE everyday spoken A2/B1 ENGLISH words (use simple verbs like "uses", "starts with", "gets full", "grows", "copies", "lets us"; NEVER use academic words like "invariants", "utilizes", "exposes", "upon"). Write 3 short paragraphs (4-5 short sentences, max 85 words) packing ALL key internal structures, numbers, methods, and Big-O with zero fluff so there are no follow-up questions.';
 
-    const userPromptContent = isRecentFollowUp
-        ? `Previous spoken segment (a few seconds ago): "${lastGroqTranscriptionText}"\nLatest spoken segment (just now): "${cleanTranscript}"\n\nINSTRUCTION: Silently decode any phonetic speech-to-text errors without mentioning them. ${langInstruction}\n1. If the Latest segment is a continuation, second half, or clarification of the Previous segment, combine them and answer the FULL intended question.\n2. If the Latest segment is a self-correction or a brand-new question on a different topic, IGNORE the Previous segment completely and answer ONLY the Latest segment.`
-        : `Silently decode any phonetic speech-to-text errors in this transcription (never mention the error) and answer the intended Java / Backend interview question completely. ${langInstruction}\nQuestion: "${cleanTranscript}"`;
+    const userPromptContent = previousSegmentsText
+        ? `Recent interviewer speech context (last 45 seconds): "${previousSegmentsText}"\nLatest spoken segment (just now): "${cleanTranscript}"${screenContextBlock}\n\nINSTRUCTION: Silently decode any phonetic speech-to-text errors without mentioning them. ${langInstruction}\n1. Interviewers often speak in long sentences, pause to think, or change words mid-question. If the Latest segment is a continuation, follow-up, or modification of the Recent speech context (or refers to the Active Screen Code Context), combine them and answer the FULL intended question.\n2. If the Latest segment is a brand-new question on a different topic, ignore the older speech context and answer ONLY the Latest question.`
+        : `Silently decode any phonetic speech-to-text errors in this transcription (never mention the error) and answer the intended Java / Backend interview question completely.${screenContextBlock} ${langInstruction}\nQuestion: "${cleanTranscript}"`;
 
-    lastGroqTranscriptionText = cleanTranscript;
-    lastGroqTranscriptionTime = now;
+    const historyMessages = [];
+    for (const turn of recentInterviewTurns.slice(-3)) {
+        historyMessages.push({ role: 'user', content: turn.question });
+        historyMessages.push({ role: 'assistant', content: turn.answer });
+    }
 
     let response = null;
     let activeModel = primaryModel;
 
     try {
-        for (let attempt = 0; attempt < candidateModels.length + 1; attempt++) {
-            const modelToTry = candidateModels[attempt] || primaryModel;
-            if (attempt === candidateModels.length) {
-                // All models hit rate limit simultaneously; wait 1.5s for bucket reset and retry primary
-                await new Promise(resolve => setTimeout(resolve, 1500));
-            }
-            activeModel = modelToTry;
-            console.log(`Sending to Groq (${activeModel}):`, transcription.substring(0, 100) + '...');
-            logTransportEvent('groq.text.request', {
-                model: activeModel,
-                transcription,
-            });
-
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                signal: abortController.signal,
-                headers: {
-                    Authorization: `Bearer ${groqApiKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
+        if (groqApiKey) {
+            for (let attempt = 0; attempt < candidateModels.length; attempt++) {
+                const modelToTry = candidateModels[attempt] || primaryModel;
+                activeModel = modelToTry;
+                console.log(`Sending to Groq (${activeModel}):`, cleanTranscript.substring(0, 100) + '...');
+                logTransportEvent('groq.text.request', {
                     model: activeModel,
-                    messages: [
-                        { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
-                        { role: 'user', content: userPromptContent },
-                    ],
-                    stream: true,
-                    temperature: 0.5,
-                    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
-                    ...getGroqReasoningOptions(activeModel, config.disableGroqThinking),
-                }),
-            });
+                    transcription: cleanTranscript,
+                });
 
-            if (res.ok) {
-                response = res;
-                break;
-            }
+                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    signal: abortController.signal,
+                    headers: {
+                        Authorization: `Bearer ${groqApiKey}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: activeModel,
+                        messages: [
+                            { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
+                            ...historyMessages,
+                            { role: 'user', content: userPromptContent },
+                        ],
+                        stream: true,
+                        temperature: 0.4,
+                        max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                        ...getGroqReasoningOptions(activeModel, config.disableGroqThinking),
+                    }),
+                });
 
-            const errorText = await res.text();
-            console.warn(`Groq model ${activeModel} returned ${res.status}, switching to fallback...`, errorText);
-            if (res.status === 429) {
-                console.warn(`Model ${activeModel} hit 429 rate limit, setting 2-minute cooldown`);
-                groqModelCooldownUntil.set(activeModel, Date.now() + 120000);
+                if (res.ok) {
+                    response = res;
+                    break;
+                }
+
+                const errorText = await res.text();
+                console.warn(`Groq model ${activeModel} returned ${res.status}, switching to fallback...`, errorText);
+                if (res.status === 429) {
+                    console.warn(`Model ${activeModel} hit 429 rate limit, setting 2-minute cooldown`);
+                    groqModelCooldownUntil.set(activeModel, Date.now() + 120000);
+                }
+                logTransportEvent('groq.text.http_error', {
+                    model: activeModel,
+                    status: res.status,
+                    body: errorText,
+                });
             }
-            logTransportEvent('groq.text.http_error', {
+        }
+
+        let cleanedResponse = '';
+
+        if (response) {
+            logTransportEvent('groq.text.http_response', {
                 model: activeModel,
-                status: res.status,
-                body: errorText,
+                status: response.status,
             });
-        }
 
-        if (!response) {
-            groqConversationHistory.pop();
-            sendToRenderer('update-status', 'Listening...');
-            return;
-        }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+            let lineBuffer = '';
+            let isFirst = true;
+            let finishReason = null;
 
-        logTransportEvent('groq.text.http_response', {
-            model: activeModel,
-            status: response.status,
-        });
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let lineBuffer = '';
-        let isFirst = true;
-        let finishReason = null;
+                const chunk = decoder.decode(value, { stream: true });
+                logTransportEvent('groq.text.stream_chunk', { chunk });
+                lineBuffer += chunk;
+                const rawLines = lineBuffer.split('\n');
+                lineBuffer = rawLines.pop() || '';
+                const lines = rawLines.filter(line => line.trim() !== '');
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6).trim();
+                        if (data === '[DONE]') continue;
 
-            const chunk = decoder.decode(value, { stream: true });
-            logTransportEvent('groq.text.stream_chunk', { chunk });
-            lineBuffer += chunk;
-            const rawLines = lineBuffer.split('\n');
-            lineBuffer = rawLines.pop() || '';
-            const lines = rawLines.filter(line => line.trim() !== '');
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') continue;
-
-                    try {
-                        const json = JSON.parse(data);
-                        logTransportEvent('groq.text.stream_event', json);
-                        finishReason = json.choices?.[0]?.finish_reason || finishReason;
-                        const token = json.choices?.[0]?.delta?.content || '';
-                        if (token) {
-                            fullText += token;
-                            const displayText = stripThinkingTags(fullText);
-                            if (displayText) {
-                                sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
-                                isFirst = false;
+                        try {
+                            const json = JSON.parse(data);
+                            logTransportEvent('groq.text.stream_event', json);
+                            finishReason = json.choices?.[0]?.finish_reason || finishReason;
+                            const token = json.choices?.[0]?.delta?.content || '';
+                            if (token) {
+                                fullText += token;
+                                const displayText = stripThinkingTags(fullText);
+                                if (displayText) {
+                                    sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
+                                    isFirst = false;
+                                }
                             }
+                        } catch (parseError) {
+                            logTransportEvent('groq.text.stream_parse_error', {
+                                data,
+                                error: parseError.message,
+                            });
                         }
-                    } catch (parseError) {
-                        logTransportEvent('groq.text.stream_parse_error', {
-                            data,
-                            error: parseError.message,
-                        });
                     }
                 }
             }
+
+            cleanedResponse = stripThinkingTags(fullText);
+            const modelKey = activeModel.split('/').pop();
+            const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
+            const inputChars = systemPromptChars + userPromptContent.length;
+            const outputChars = cleanedResponse.length;
+            incrementCharUsage('groq', modelKey, inputChars + outputChars);
         }
 
-        const cleanedResponse = stripThinkingTags(fullText);
-        const modelKey = activeModel.split('/').pop();
-
-        const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
-        const historyChars = groqConversationHistory.reduce((sum, msg) => sum + (msg.content || '').length, 0);
-        const inputChars = systemPromptChars + historyChars;
-        const outputChars = cleanedResponse.length;
-
-        incrementCharUsage('groq', modelKey, inputChars + outputChars);
+        // Automatic Gemini fallback if Groq failed or returned empty
+        if (!cleanedResponse && geminiApiKey) {
+            console.log('[Gemini Fallback] Using Gemini IPv4 for text response...');
+            sendToRenderer('update-status', 'Generating response (Gemini)...');
+            const geminiRes = await callGeminiIpv4(
+                userPromptContent,
+                null,
+                currentSystemPrompt || 'You are a helpful Java interview assistant.'
+            );
+            if (geminiRes && geminiRes.text) {
+                cleanedResponse = stripThinkingTags(geminiRes.text);
+                activeModel = geminiRes.model;
+                sendToRenderer('new-response', cleanedResponse);
+            }
+        }
 
         if (cleanedResponse) {
-            saveConversationTurn(transcription, cleanedResponse);
+            saveConversationTurn(cleanTranscript, cleanedResponse);
             recentInterviewTurns.push({ question: cleanTranscript, answer: cleanedResponse });
             if (recentInterviewTurns.length > 6) {
                 recentInterviewTurns = recentInterviewTurns.slice(-6);
             }
         } else {
-            console.warn(`Groq returned empty answer (${activeModel}), ignoring`);
-            groqConversationHistory.pop();
+            console.warn(`AI returned empty answer (${activeModel}), ignoring`);
             sendToRenderer('update-status', 'Listening...');
             return;
         }
@@ -489,15 +623,35 @@ async function sendToGroq(transcription) {
             model: activeModel,
             response: cleanedResponse,
         });
-        console.log(`Groq response completed (${activeModel})`);
+        console.log(`Response completed (${activeModel})`);
         sendToRenderer('update-status', 'Listening...');
     } catch (error) {
         if (error && error.name === 'AbortError') {
             console.log('Previous Groq stream aborted because speaker continued talking');
             return;
         }
-        console.error('Error calling Groq API:', error);
-        groqConversationHistory.pop();
+        console.error('Error in sendToGroq:', error);
+        // Last-resort Gemini fallback on network exception
+        if (geminiApiKey) {
+            try {
+                console.log('[Gemini Fallback] Recovering from Groq error via Gemini IPv4...');
+                const geminiRes = await callGeminiIpv4(
+                    userPromptContent,
+                    null,
+                    currentSystemPrompt || 'You are a helpful Java interview assistant.'
+                );
+                if (geminiRes && geminiRes.text) {
+                    const cleanedResponse = stripThinkingTags(geminiRes.text);
+                    sendToRenderer('new-response', cleanedResponse);
+                    saveConversationTurn(cleanTranscript, cleanedResponse);
+                    recentInterviewTurns.push({ question: cleanTranscript, answer: cleanedResponse });
+                    sendToRenderer('update-status', 'Listening...');
+                    return;
+                }
+            } catch (gemErr) {
+                console.error('[Gemini Fallback] Error:', gemErr.message);
+            }
+        }
         logTransportEvent('groq.text.error', {
             error: error.message,
             stack: error.stack,
@@ -509,28 +663,26 @@ async function sendToGroq(transcription) {
 const SCREEN_ANALYSIS_SYSTEM_PROMPT = `You are a real-time interview teleprompter for a Java / Spring / Backend developer. The user will read your explanation out loud and use your corrected code.
 
 CRITICAL LANGUAGE & STYLE RULES:
-- ALWAYS write your explanation in simple, natural, everyday spoken English (B1/B2 level). Never use fancy textbook words ("paradigm", "facilitate", "leverage", "utilize").
+- ALWAYS write your explanation in simple, natural, everyday spoken English (A2/B1/B2 level). Never use fancy textbook words ("paradigm", "facilitate", "leverage", "utilize").
 - Break the explanation into 2 to 4 short visual paragraphs (1 to 2 short sentences per paragraph) with an empty line between paragraphs so the user can scan and read it effortlessly.
-- Bold ONLY the key technical terms, annotations, method names, or bug names.
+- Bold ONLY the key technical terms, annotations, method names, line numbers, or output values.
 - Never use introductory filler ("Sure, here is the code review:"). Start immediately with the first point.
 
 MANDATORY TWO-PART OUTPUT STRUCTURE FOR CODE ON SCREEN:
-Part 1 — Spoken Explanation (What is wrong & why):
-- Go through the bugs, logical errors, or Spring/Java/SQL pitfalls one by one in short paragraphs.
-- For each issue, state **what the problem is**, **why it breaks or is bad practice**, and **how we fix it** in simple spoken English.
-- Check for classic Java/Spring issues: loop condition bugs, **Scanner**/**Resource** leaks, comparing **String** with **==** instead of **.equals()**, **NumberFormatException** / **NullPointerException** risks, **@Transactional** on **private** methods, **N+1** queries in loops, non-thread-safe **HashMap** in singletons, **Optional.get()** without check, or **@Autowired** field injection.
+Part 1 — Spoken Explanation (What it outputs, whether it compiles, & what is wrong):
+- First, state clearly **whether the code compiles** and **what exact output or exception it produces** (trace method calls, reference type vs runtime object in dynamic dispatch, access modifiers, and **try-catch-finally** return values).
+- Next, go through every compilation error, bug, logical error, or Spring/Java/SQL pitfall one by one in short paragraphs: state **what the problem is**, **why it fails**, and **how to fix it**.
+- Check for classic Java interview traps: narrowing access modifiers in overridden methods (**public** to **protected** fails to compile), calling child-only methods on a parent reference (**A a = new B(); a.m3()** fails at compile time), **return** inside **finally** overriding **try/catch** returns or swallowing exceptions, unhandled checked exceptions (**IOException**), **Scanner**/**Resource** leaks, comparing **String** with **==** instead of **.equals()**, **@Transactional** on **private** methods or self-invocation, and **N+1** queries.
 
 Part 2 — Complete, Fixed, Working Code (ALWAYS REQUIRED):
 - Immediately after your spoken explanation, ALWAYS provide the **complete, corrected, ready-to-run code** inside a fenced code block (e.g. \`\`\`java ... \`\`\` or \`\`\`sql ... \`\`\`).
-- KEEP THE CODE SIMPLE AND STRAIGHTFORWARD:
-  * Write clean, natural, easy-to-understand code without over-engineering or fancy tricks.
-  * Keep the original class names, method names, and variable names from the screenshot so it is a direct, working fix of the user's code.
-  * Make sure the code compiles and works 100% correctly.`;
+- Keep the original class names, method names, and variable names from the screenshot so it is a direct, working fix of the code on screen.`;
 
 async function sendImageToGroq(base64Data, prompt) {
     const groqApiKey = getGroqApiKey();
-    if (!groqApiKey) {
-        return { success: false, error: 'No Groq API key configured' };
+    const geminiApiKey = getApiKey ? getApiKey() : '';
+    if (!groqApiKey && !geminiApiKey) {
+        return { success: false, error: 'Neither Groq nor Gemini API key configured' };
     }
     const config = getConfig();
     const model = config.groqImageModel || 'qwen/qwen3.8-27b';
@@ -551,10 +703,13 @@ async function sendImageToGroq(base64Data, prompt) {
         ? '\n\nCRITICAL LANGUAGE RULE: Write Part 1 (Spoken Explanation) in natural spoken UKRAINIAN (живою українською мовою), followed by Part 2 (complete working code block).'
         : '\n\nCRITICAL LANGUAGE RULE: Write Part 1 (Spoken Explanation) in simple spoken B1/B2 ENGLISH, followed by Part 2 (complete working code block).';
 
-    const recentSpokenContext =
-        lastGroqTranscriptionText && (Date.now() - lastGroqTranscriptionTime < 25000)
-            ? `\n\n(Note: The interviewer also recently said out loud: "${lastGroqTranscriptionText}" — take this into account if it refers to the screen.)`
-            : '';
+    const recentSpokenText = recentSpeechSegments
+        .filter(seg => Date.now() - seg.time < 45000)
+        .map(seg => seg.text)
+        .join(' ');
+    const recentSpokenContext = recentSpokenText
+        ? `\n\n(Note: The interviewer also recently said out loud: "${recentSpokenText}" — answer this specific question about the code on screen as well.)`
+        : '';
 
     const fullUserPrompt = (prompt || 'Analyze this screen for my Java technical interview.') + screenLangRule + recentSpokenContext;
 
@@ -570,144 +725,175 @@ async function sendImageToGroq(base64Data, prompt) {
         let response = null;
         let lastErrorText = '';
 
-        for (let attempt = 0; attempt < 3; attempt++) {
-            if (attempt > 0) {
-                console.log(`Retrying Groq vision after rate-limit pause (attempt ${attempt + 1}/3)...`);
-                await new Promise(resolve => setTimeout(resolve, 1600));
-            }
+        if (groqApiKey) {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                if (attempt > 0) {
+                    console.log(`Retrying Groq vision after pause (attempt ${attempt + 1}/2)...`);
+                    await new Promise(resolve => setTimeout(resolve, 900));
+                }
 
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                signal: abortController.signal,
-                headers: {
-                    Authorization: `Bearer ${groqApiKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    model,
-                    messages: [
-                        { role: 'system', content: SCREEN_ANALYSIS_SYSTEM_PROMPT },
-                        {
-                            role: 'user',
-                            content: [
-                                { type: 'text', text: fullUserPrompt },
-                                {
-                                    type: 'image_url',
-                                    image_url: {
-                                        url: `data:image/jpeg;base64,${base64Data}`,
+                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    signal: abortController.signal,
+                    headers: {
+                        Authorization: `Bearer ${groqApiKey}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model,
+                        messages: [
+                            { role: 'system', content: SCREEN_ANALYSIS_SYSTEM_PROMPT },
+                            {
+                                role: 'user',
+                                content: [
+                                    { type: 'text', text: fullUserPrompt },
+                                    {
+                                        type: 'image_url',
+                                        image_url: {
+                                            url: `data:image/jpeg;base64,${base64Data}`,
+                                        },
                                     },
-                                },
-                            ],
-                        },
-                    ],
-                    stream: true,
-                    temperature: 0.3,
-                    max_completion_tokens: 2048,
-                    ...getGroqReasoningOptions(model, config.disableGroqThinking),
-                }),
-            });
+                                ],
+                            },
+                        ],
+                        stream: true,
+                        temperature: 0.3,
+                        max_completion_tokens: 2048,
+                        ...getGroqReasoningOptions(model, config.disableGroqThinking),
+                    }),
+                });
 
-            if (res.ok) {
-                response = res;
-                break;
-            }
+                if (res.ok) {
+                    response = res;
+                    break;
+                }
 
-            lastErrorText = await res.text();
-            console.warn(`Groq image API attempt ${attempt + 1} returned ${res.status}:`, lastErrorText);
-            logTransportEvent('groq.image.http_error', {
-                status: res.status,
-                body: lastErrorText,
-            });
+                lastErrorText = await res.text();
+                console.warn(`Groq image API attempt ${attempt + 1} returned ${res.status}:`, lastErrorText);
+                logTransportEvent('groq.image.http_error', {
+                    status: res.status,
+                    body: lastErrorText,
+                });
 
-            if (res.status !== 429 && res.status < 500) {
-                break;
-            }
-        }
+                // If rate limited (429) and we have Gemini API key, switch immediately to Gemini without waiting!
+                if (res.status === 429 && geminiApiKey) {
+                    console.log('[Gemini Vision Fallback] Groq vision hit 429 rate limit, switching immediately to Gemini IPv4...');
+                    break;
+                }
 
-        if (!response) {
-            const isRateLimit = lastErrorText.includes('rate_limit') || lastErrorText.includes('429');
-            const cleanErr = isRateLimit
-                ? 'Rate limit on vision model. Groq tokens reset in ~1 minute. Please retry shortly.'
-                : `Vision error: ${lastErrorText.slice(0, 100) || 'Request failed'}`;
-            sendToRenderer('new-response', cleanErr);
-            sendToRenderer('update-status', 'Listening...');
-            return { success: false, error: cleanErr };
-        }
-
-        logTransportEvent('groq.image.http_response', {
-            status: response.status,
-        });
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let lineBuffer = '';
-        let isFirst = true;
-        let finishReason = null;
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            logTransportEvent('groq.image.stream_chunk', { chunk });
-            lineBuffer += chunk;
-            const rawLines = lineBuffer.split('\n');
-            lineBuffer = rawLines.pop() || '';
-            const lines = rawLines.filter(line => line.trim() !== '');
-
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-
-                const data = line.slice(6).trim();
-                if (data === '[DONE]') continue;
-
-                try {
-                    const json = JSON.parse(data);
-                    logTransportEvent('groq.image.stream_event', json);
-                    finishReason = json.choices?.[0]?.finish_reason || finishReason;
-                    const token = json.choices?.[0]?.delta?.content || '';
-                    if (!token) continue;
-
-                    fullText += token;
-                    const displayText = stripThinkingTags(fullText);
-                    if (displayText) {
-                        sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
-                        isFirst = false;
-                    }
-                } catch (parseError) {
-                    logTransportEvent('groq.image.stream_parse_error', {
-                        data,
-                        error: parseError.message,
-                    });
+                if (res.status !== 429 && res.status < 500) {
+                    break;
                 }
             }
         }
 
-        const cleanedResponse = stripThinkingTags(fullText);
-        sendToRenderer('update-status', 'Listening...');
-
-        if (!cleanedResponse) {
-            logTransportEvent('groq.image.empty_response', {
-                model,
-                fullText,
-                finishReason,
+        if (response) {
+            logTransportEvent('groq.image.http_response', {
+                status: response.status,
             });
-            return { success: false, error: GROQ_EMPTY_RESPONSE_MESSAGE };
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+            let lineBuffer = '';
+            let isFirst = true;
+            let finishReason = null;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                logTransportEvent('groq.image.stream_chunk', { chunk });
+                lineBuffer += chunk;
+                const rawLines = lineBuffer.split('\n');
+                lineBuffer = rawLines.pop() || '';
+                const lines = rawLines.filter(line => line.trim() !== '');
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const json = JSON.parse(data);
+                        logTransportEvent('groq.image.stream_event', json);
+                        finishReason = json.choices?.[0]?.finish_reason || finishReason;
+                        const token = json.choices?.[0]?.delta?.content || '';
+                        if (!token) continue;
+
+                        fullText += token;
+                        const displayText = stripThinkingTags(fullText);
+                        if (displayText) {
+                            sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
+                            isFirst = false;
+                        }
+                    } catch (parseError) {
+                        logTransportEvent('groq.image.stream_parse_error', {
+                            data,
+                            error: parseError.message,
+                        });
+                    }
+                }
+            }
+
+            const cleanedResponse = stripThinkingTags(fullText);
+            if (cleanedResponse) {
+                sendToRenderer('update-status', 'Listening...');
+                saveScreenAnalysis(fullUserPrompt, cleanedResponse, model);
+                logTransportEvent('groq.image.completed', {
+                    model,
+                    response: cleanedResponse,
+                });
+                return { success: true, text: cleanedResponse, model };
+            }
         }
 
-        saveScreenAnalysis(fullUserPrompt, cleanedResponse, model);
-        logTransportEvent('groq.image.completed', {
-            model,
-            response: cleanedResponse,
-        });
-        return { success: true, text: cleanedResponse, model };
-    } catch (error) {
+        // Automatic fallback to Gemini Vision over IPv4 if Groq vision failed, rate-limited, or returned empty
+        if (geminiApiKey) {
+            sendToRenderer('update-status', 'Analyzing screen (Gemini Vision)...');
+            console.log('[Gemini Vision Fallback] Calling Gemini 3 Flash Vision over IPv4...');
+            const geminiRes = await callGeminiIpv4(fullUserPrompt, base64Data, SCREEN_ANALYSIS_SYSTEM_PROMPT);
+            if (geminiRes && geminiRes.text) {
+                const cleanedResponse = stripThinkingTags(geminiRes.text);
+                sendToRenderer('new-response', cleanedResponse);
+                sendToRenderer('update-status', 'Listening...');
+                saveScreenAnalysis(fullUserPrompt, cleanedResponse, geminiRes.model);
+                logTransportEvent('gemini.image.completed', {
+                    model: geminiRes.model,
+                    response: cleanedResponse,
+                });
+                return { success: true, text: cleanedResponse, model: geminiRes.model };
+            }
+        }
+
+        const cleanErr = `Vision error: ${lastErrorText.slice(0, 100) || 'Request failed'}`;
+        sendToRenderer('new-response', cleanErr);
         sendToRenderer('update-status', 'Listening...');
+        return { success: false, error: cleanErr };
+    } catch (error) {
         if (error && error.name === 'AbortError') {
+            sendToRenderer('update-status', 'Listening...');
             return { success: false, error: 'Aborted' };
         }
-        console.error('Error calling Groq image API:', error);
+        console.error('Error in sendImageToGroq:', error);
+        if (geminiApiKey) {
+            try {
+                sendToRenderer('update-status', 'Analyzing screen (Gemini Vision)...');
+                const geminiRes = await callGeminiIpv4(fullUserPrompt, base64Data, SCREEN_ANALYSIS_SYSTEM_PROMPT);
+                if (geminiRes && geminiRes.text) {
+                    const cleanedResponse = stripThinkingTags(geminiRes.text);
+                    sendToRenderer('new-response', cleanedResponse);
+                    sendToRenderer('update-status', 'Listening...');
+                    saveScreenAnalysis(fullUserPrompt, cleanedResponse, geminiRes.model);
+                    return { success: true, text: cleanedResponse, model: geminiRes.model };
+                }
+            } catch (gemErr) {
+                console.error('[Gemini Vision Fallback] Error:', gemErr.message);
+            }
+        }
+        sendToRenderer('update-status', 'Listening...');
         logTransportEvent('groq.image.error', {
             error: error.message,
             stack: error.stack,
